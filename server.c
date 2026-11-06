@@ -95,9 +95,6 @@ int search_player_index(const char* username){
 }
 
 void display_player_info(const char* username){
-
-    pthread_mutex_lock(&players_lock);
-
     Player* player=search_player(username);
     char *state;
     if(player!=NULL){
@@ -124,7 +121,6 @@ void display_player_info(const char* username){
         printf("State: %s \n",state);
         printf("\n------------------------\n");
     }
-    pthread_mutex_unlock(&players_lock);
 }
 
 void display_online_players(){
@@ -132,8 +128,6 @@ void display_online_players(){
     cJSON *players_json=cJSON_CreateObject();
     cJSON *players_array=cJSON_AddArrayToObject(players_json,"Players");
     char *json=NULL;
-
-    pthread_mutex_lock(&players_lock);
     
     if(player_count>0){
         printf("Player count: %d \n",player_count);
@@ -147,17 +141,23 @@ void display_online_players(){
         printf("%s\n",json);
         cJSON_free(players_json);
     }
-    pthread_mutex_unlock(&players_lock);
 }
+
+int modify_user_state(const char *username,State state){
+    int player_index=search_player_index(username);
+    if(player_index!=-1){
+        player_c[player_index].state=state;
+        return 1;
+    }
+    return 0;
+}   
 
 
 void add_player_bio(const char *username, const char *bio){
-    pthread_mutex_lock(&players_lock);
     int player_index=search_player_index(username);
     if(player_index!=-1){
         snprintf(player_c[player_index].bio,sizeof(player_c[player_index].bio),"%s",bio);
     }
-    pthread_mutex_unlock(&players_lock);
 }
 void *handle_client(void *arg){   
     char *save_ptr=NULL;
@@ -184,16 +184,18 @@ void *handle_client(void *arg){
                 }
                 else{
                     pthread_mutex_lock(&players_lock);
-                    char* msg=register_username(username);
-                    pthread_mutex_unlock(&players_lock);     
-                    
+                    char* msg=register_username(username);   
+                    pthread_mutex_unlock(&players_lock);
+
                     printf("Message from registration: %s \n",msg);                       
                     send(connect_socket_fd,msg,strlen(msg),0);                            
                 }            
             }
 
             if(strcmp(command,"/list-online-users")==0){
-                display_online_players();                                                
+                pthread_mutex_lock(&players_lock);
+                display_online_players();         
+                pthread_mutex_unlock(&players_lock);                                       
                 //send(connect_socket_fd,online_p,strlen(online_p),0);                        
             }
 
@@ -204,22 +206,26 @@ void *handle_client(void *arg){
                 printf("[*] Username: %s\n",username);
                 printf("[*] Bio: %s\n",bio);
                 
-                add_player_bio(username,bio);
+                pthread_mutex_lock(&players_lock);
+                add_player_bio(username,bio);     
+                pthread_mutex_unlock(&players_lock);           
+                
                 char *response="BIO_ADDED";
                 send(connect_socket_fd,response,strlen(response),0);
             }
 
             if(strcmp(command,"/quit")==0){
-                printf("[+] Closing the communication with the client \n");
-                close(connect_socket_fd);
-                exit(EXIT_SUCCESS);
-            }                    
-                                
+                char *username=strtok_r(NULL," ",&save_ptr);                
+                modify_user_state(username,OFFLINE);     
+            }                                                    
         }                
         
     }while(strcmp(buffer_in,"/quit")!=0);
 
-    printf("[+] Closing the communication with the client \n");
+    printf("[*] Closing the communication with the client \n");
+    char *response="SERVER_DISCONNECTED";
+    send(connect_socket_fd,response,strlen(response),0);
+
     close(connect_socket_fd);
     return NULL;
 }

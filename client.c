@@ -28,8 +28,6 @@ void display_menu(){
     printf("/quit \n");
 }
 
-
-
 void main(int argc, char* argv[]){
     struct sockaddr_in server_addr;
     int connect_client_fd;
@@ -84,17 +82,21 @@ void main(int argc, char* argv[]){
         if(strcmp(buffer_out,"USERNAME_AVAILABLE")==0){
             char *command=strtok(buffer_in," ");
             char *username=strtok(NULL, " ");
-            prompt=username;
+            strncpy(player.username,username,strlen(username));
+            prompt=player.username;
         }
         if(strcmp(buffer_out,"BIO_ADDED")==0){
             printf("[+] Bio added successfully \n");
-        }                              
+        }
+        if(strcmp(buffer_out,"SERVER_DISCONNECTED")==0){
+            break;
+        }                                      
 
     } while(strcmp(buffer_in,"/quit")!=0);
 
     close(connect_client_fd);
-    printf("--------------------------------------\n");
-    printf("You left the server");
-    printf("--------------------------------------\n");
+    printf("\n--------------------------------------\n");
+    printf("[*] You left the server \n");
+    printf("\n--------------------------------------\n");
     exit(EXIT_SUCCESS);   
 }
