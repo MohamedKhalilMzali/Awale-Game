@@ -40,3 +40,13 @@ void recv_from_client(int connect_socket_fd, char buffer_out[1024]){
     ssize_t nbBytes=recv(connect_socket_fd,buffer_out,BUFFER_SIZE-1,0);
     buffer_out[nbBytes] = '\0';
 }
+void send_to_client(int connect_socket_fd, MSG_TYPE msg_type, const char *data){
+    
+    uint32_t type = htonl((uint32_t)msg_type);
+    uint32_t length = htonl((uint32_t)strlen(data));
+
+    send(connect_socket_fd,&type,sizeof(type),0);
+    send(connect_socket_fd,&length,sizeof(length),0);
+    send(connect_socket_fd,data,strlen(data),0);                            
+}
+
