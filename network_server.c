@@ -9,7 +9,7 @@
 #include <ctype.h>
 #include "network_server.h"
 
-int create_listener(){
+int create_listener(int port){
     int listen_socket_fd;
     int opt=1;
     struct sockaddr_in socket_addr;
@@ -23,7 +23,7 @@ int create_listener(){
         exit(EXIT_FAILURE);
     }
     socket_addr.sin_family=AF_INET;
-    socket_addr.sin_port=htons(8000);
+    socket_addr.sin_port=htons(port);
     socket_addr.sin_addr.s_addr=INADDR_ANY;
     if(bind(listen_socket_fd,(struct sockaddr*)&socket_addr,sizeof(socket_addr))<0){
         printf("[-] Could not bind the socket to a port \n");
@@ -36,17 +36,26 @@ int create_listener(){
     return listen_socket_fd;
 }
 
-void recv_from_client(int connect_socket_fd, char buffer_out[1024]){    
+int recv_from_client(int connect_socket_fd, char buffer_out[1024]){    
     ssize_t nbBytes=recv(connect_socket_fd,buffer_out,BUFFER_SIZE-1,0);
-    buffer_out[nbBytes] = '\0';
+    if(nbBytes>0){
+        buffer_out[nbBytes] = '\0';
+    }
+    return nbBytes;
 }
-void send_to_client(int connect_socket_fd, MSG_TYPE msg_type, const char *data){
+void send_to_client(int connect_socket_fd, MSG_TYPE msg_type, const void *data, uint32_t data_length){
     
     uint32_t type = htonl((uint32_t)msg_type);
-    uint32_t length = htonl((uint32_t)strlen(data));
+    uint32_t length=htonl(data_length);
 
-    send(connect_socket_fd,&type,sizeof(type),0);
-    send(connect_socket_fd,&length,sizeof(length),0);
-    send(connect_socket_fd,data,strlen(data),0);                            
+    if(send(connect_socket_fd,&type,sizeof(type),0)<0){
+        perror("sending failed on the type \n");
+    }
+    if(send(connect_socket_fd,&length,sizeof(length),0)<0){
+        perror("sending failed on the length \n");
+    }
+    if(send(connect_socket_fd,data,data_length,0)<0){
+        perror("sending failed on the data \n");
+    }                            
 }
 
