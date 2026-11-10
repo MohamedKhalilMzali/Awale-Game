@@ -12,6 +12,7 @@ typedef struct Player{
 }Player;
 
 typedef enum Invite_state{
+    NONE,
     PENDING,
     ACCEPTED,
     REFUSED
@@ -21,3 +22,8 @@ typedef struct Invite{
     char sender_username[256];
     Invite_state invite_state;
 }Invite;
+
+typedef struct Chat_message{   
+    char sender_username[256];
+    char message[1024]; 
+}Chat_message;

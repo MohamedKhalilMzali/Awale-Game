@@ -166,6 +166,39 @@ void add_player_bio(const char *username, const char *bio){
     }
 }
 
+void send_message_chat(const char *sender_username, const char *receiver_username, const char* msg){
+    Player* sender=search_player(sender_username);
+    Player* receiver=search_player(receiver_username);
+
+    if(sender==NULL){
+        printf("[-] User %s does not exist \n",sender->username);
+        return;
+    }
+    if(receiver==NULL){
+         printf("[-] User %s does not exist \n",receiver->username);
+        return;
+    }
+
+    printf("Sender [%s] socket %d\n",sender->username,sender->socket);
+    printf("Receiver [%s] socket %d\n",receiver->username,receiver->socket);
+
+    if(msg==NULL){
+        return;
+    }
+  
+    if (fcntl(receiver->socket, F_GETFD) == -1) {
+        perror("Receiver socket is invalid");
+    }
+
+    Chat_message chat_msg;
+    snprintf(chat_msg.sender_username,sizeof(chat_msg.sender_username),"%s",sender_username);
+    snprintf(chat_msg.message,sizeof(chat_msg.message),"%s",msg);
+
+    
+    send_to_client(receiver->socket,MSG_CHAT,&chat_msg,sizeof(chat_msg));
+    printf("[+] Sending message %s from %s to %s on socket %d \n",chat_msg.message,chat_msg.sender_username,receiver->username,receiver->socket);
+}
+
 void send_invite(const char *sender_username, const char *receiver_username){
     Player* sender=search_player(sender_username);
     Player* receiver=search_player(receiver_username);
@@ -192,17 +225,17 @@ void send_invite(const char *sender_username, const char *receiver_username){
     send_to_client(receiver->socket,MSG_INVITE,&invite,sizeof(invite));
     printf("[+] Sending invite from %s to %s on socket %d \n",sender->username,receiver->username,receiver->socket);
     
-    /*char buffer_out[256];
+    char buffer_out[256];
     recv_from_client(receiver->socket,buffer_out);
     if(strcmp(buffer_out,"REFUSED")==0){        
         send_to_client(sender->socket,MSG_TEXT,&buffer_out,strlen(buffer_out));
     }
     if(strcmp(buffer_out,"ACCEPTED")==0){
         //running play_game function which launches the game between both players
+        printf("[+] Running the game ... \n");
     }
-    */
-    }
-
+    
+}
 
 void *handle_client(void *arg){   
     char *save_ptr=NULL;
@@ -218,16 +251,14 @@ void *handle_client(void *arg){
         
         ssize_t n = recv_from_client(connect_socket_fd, buffer_out);
 
-        if (n == 0) {
+        if (n==0) {
             printf("Client disconnected.\n");
             break;
         }
-
-        if (n < 0) {
+        if (n<0) {
             perror("recv");
             break;
         }
-
         printf("Received: %s\n", buffer_out);
 
         char *save_ptr = NULL;
@@ -236,10 +267,7 @@ void *handle_client(void *arg){
         if (command == NULL) {
             continue;
         }
-        
-        
-      
-            
+              
         if(strcmp(command,"/register")==0){
             char *username=strtok_r(NULL," ",&save_ptr);
             printf("Username: %s \n",username);
@@ -284,14 +312,19 @@ void *handle_client(void *arg){
             pthread_mutex_lock(&players_lock);
             char *sender_username=search_player_by_socket(connect_socket_fd);
             char *receiver_username=strtok_r(NULL, " ",&save_ptr);
-            
-            /*for (int i = 0; i < player_count; i++) {
-                printf("Player: %s | Socket: %d\n",
-                    player_c[i].username,
-                    player_c[i].socket);
-            }*/
+                      
             send_invite(sender_username,receiver_username);
             pthread_mutex_unlock(&players_lock); 
+        }
+
+        else if(strcmp(command,"/send-msg")==0){
+            char *sender_username=search_player_by_socket(connect_socket_fd);
+            char *receiver_username=strtok_r(NULL, " ",&save_ptr);
+            char *msg=strtok_r(NULL,"\r\n",&save_ptr);
+
+            pthread_mutex_lock(&players_lock);
+            send_message_chat(sender_username,receiver_username,msg);     
+            pthread_mutex_unlock(&players_lock);           
         }
 
         else if(strcmp(command,"/quit")==0){

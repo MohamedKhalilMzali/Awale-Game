@@ -14,8 +14,9 @@
 
 static Player player;
 static pthread_mutex_t clients_lock=PTHREAD_MUTEX_INITIALIZER;
-static char *prompt="Awale (not registered)";
+static char prompt[256]="Awale (not registered)";
 static char buffer_in[1024];
+static Invite invite;
 
 void display_banner(){
     printf("\n------------------------------------------------\n");
@@ -23,14 +24,31 @@ void display_banner(){
     printf("\n------------------------------------------------\n");
 }
 
-void display_menu(){
-    printf("/register [username] \n");
-    printf("/add-bio [username] [bio] \n");
+void display_prompt(){
+    pthread_mutex_lock(&clients_lock);
+    printf("%s> ",prompt);
+    fflush(stdout);
+    pthread_mutex_unlock(&clients_lock);
+}
+
+void display_menu(){    
+    printf("--------------------------------------------\n");
+    printf("/add-bio [bio] \n");
     printf("/list-bio [username] \n");
     printf("/invite [username] \n");
+    printf("send-msg [username] [message] \n");
     printf("/list-online-users \n");
     printf("/list-current-games \n");
     printf("/quit \n");
+    printf("--------------------------------------------\n");
+}
+
+void close_comm(int connect_client_fd){
+    close(connect_client_fd);
+    printf("\n--------------------------------------\n");
+    printf("[*] You left the server \n");
+    printf("\n--------------------------------------\n");
+    exit(EXIT_SUCCESS);  
 }
 
 void display_players_from_json(cJSON *item){
@@ -81,29 +99,30 @@ void *receive_msg(void *arg){
                 printf("Received response: %s \n",msg_content);
 
                 if(strcmp(msg_content,"USERNAME_AVAILABLE")==0){
+                    pthread_mutex_lock(&clients_lock);
                     printf("Buffer_in in the thread: %s \n",buffer_in);
                     char *command=strtok(buffer_in," ");
                     char *username=strtok(NULL, " ");
-                    printf("Username in the thread: %s \n",username);
-                    pthread_mutex_lock(&clients_lock);
-                    strncpy(player.username,username,strlen(username));                    
-                    prompt=player.username;
+                    printf("Username in the thread: %s \n",username);                    
+                    if(username!=NULL){
+                        snprintf(player.username,sizeof(player.username),"%s",username);                                       
+                        snprintf(prompt,sizeof(prompt),"%s",player.username);
+                    }                    
                     pthread_mutex_unlock(&clients_lock);
                 }
-                if(strcmp(msg_content,"USERNAME_NOT_AVAILABLE")==0){
+                else if(strcmp(msg_content,"USERNAME_NOT_AVAILABLE")==0){
                     printf("[-] The requested username is already taken, please try again \n");
                 }
-                if(strcmp(msg_content,"BIO_ADDED")==0){
+                else if(strcmp(msg_content,"BIO_ADDED")==0){
                     printf("[+] Bio added successfully \n");
                 }
-                if(strcmp(msg_content,"SERVER_DISCONNECTED")==0){
+                else if(strcmp(msg_content,"SERVER_DISCONNECTED")==0){
                     printf("[-] Server disconnected from the network \n");
-                    close(connect_client_fd);
+                    close_comm(connect_client_fd);
                 }
-                if(strcmp(msg_content,"INVALID_COMMAND")==0){
+                else if(strcmp(msg_content,"INVALID_COMMAND")==0){
                     printf("[-] Server returned: invalid command \n");
-                }
-
+                }               
 
             break;
             }
@@ -126,41 +145,30 @@ void *receive_msg(void *arg){
             break;    
             }
             case MSG_INVITE:
-            {
-                Invite invite;
+            {       
+                pthread_mutex_lock(&clients_lock);      
                 memcpy(&invite,msg_content,sizeof(invite));
 
                 printf("[+] Receiving the invite from the server \n");
 
-                //invite.sender_username[sizeof(invite.sender_username)-1]='\0';
-                //printf("Sender: %s \n",invite.sender_username);
-                printf("State: %d",invite.invite_state);                
+                invite.sender_username[sizeof(invite.sender_username)-1]='\0';
+                printf("Sender: %s \n",invite.sender_username);
+                printf("State: %d \n",invite.invite_state);
+                printf("Invitation from %s to join a game: 0=refuse, 1=accept\n",invite.sender_username);
+                pthread_mutex_unlock(&clients_lock);              
 
-                do{
-                    int choice;
-                    printf("\n-------------Invitation from Player %s------------\n",invite.sender_username);
-                    printf("0: Accept\n");
-                    printf("1: Refuse\n");
-                    scanf("%d",&choice);
-                    if(choice==0){
-                        invite.invite_state=REFUSED;
-                        char *response="REFUSED";
-                        send(connect_client_fd,response,strlen(response),0);
-                    }
-                    else if(choice==1){
-                        invite.invite_state=ACCEPTED;
-                        char *response="ACCEPTED";
-                        send(connect_client_fd,response,strlen(response),0);   
-                    }
-                    else{
-                        invite.invite_state=PENDING;
-                    }                    
-                }while(invite.invite_state==PENDING);
-                
             break;
-            } 
-
-        }                                              
+            }
+            case MSG_CHAT:{
+                Chat_message chat_msg;
+                memcpy(&chat_msg,msg_content,sizeof(Chat_message));
+                printf("\n[+] NEW MESSAGE \n");
+                printf("%s: %s\n",chat_msg.sender_username,chat_msg.message);
+            break;
+            }           
+        }
+        free(msg_content);
+        display_prompt();                                            
     }
 }
 
@@ -205,38 +213,62 @@ void main(int argc, char* argv[]){
     printf("Type /help for available commands");
     printf("\n-------------------------------------\n");
 
-    do{
-        pthread_mutex_lock(&clients_lock);
-        if(player.username!=NULL){
-            prompt=player.username;
-        }
-        pthread_mutex_unlock(&clients_lock);        
-        
-        printf("%s> ",prompt);
-        
-        fflush(stdout);
+    if(player.username!=NULL && player.username[0]!= '\0'){
+        snprintf(prompt,sizeof(prompt),"%s",player.username);        
+    }
+
+    display_prompt();
+
+    do{             
         
         fgets(buffer_in,sizeof(buffer_in),stdin);
         buffer_in[sizeof(buffer_in)-1]='\0';
-        buffer_in[strcspn(buffer_in,"\n")]='\0';
-        
-        if(strcmp(buffer_in,"/help")==0){
-            display_menu();
+        buffer_in[strcspn(buffer_in,"\n")]='\0';        
+
+        if(buffer_in[0]=='\0'){
+            display_prompt();
             continue;
         }
-        else{            
-            printf("Sending \n");
+
+        if(invite.invite_state==PENDING){
+            char *response=NULL;
+            if(strcmp(buffer_in,"0")==0){
+                response="REFUSED";
+            }
+            else if(strcmp(buffer_in,"1")==0){
+                response="ACCEPTED";
+            }
+            else{
+                printf("[-] You should choose between 0 and 1 \n");
+            }
+            
             if(send(connect_client_fd,&buffer_in,strlen(buffer_in),0)<=0){
                 printf("[-] Could not send data to the server \n");
                 exit(EXIT_FAILURE);                
             }
-            printf("Sent Buffer: %s \n",buffer_in);
+            printf("Sent answer to the server \n ");               
+        }
+
+        if(strcmp(buffer_in,"/help")==0){
+            if(player.username[0]=='\0'){         
+                printf("--------------------------------------------\n");           
+                printf("/register [username] \n");
+                printf("--------------------------------------------\n");
+            }
+            else{
+                display_menu();
+            }
+            display_prompt();
+            continue;
+        }
+        else{         
+            if(send(connect_client_fd,&buffer_in,strlen(buffer_in),0)<=0){
+                printf("[-] Could not send data to the server \n");
+                exit(EXIT_FAILURE);                
+            }
+            //printf("Sent Buffer: %s \n",buffer_in);
         }                
-    }while(strcmp(buffer_in,"/quit")!=0);
-    
-    close(connect_client_fd);
-    printf("\n--------------------------------------\n");
-    printf("[*] You left the server \n");
-    printf("\n--------------------------------------\n");
-    exit(EXIT_SUCCESS);   
+    }while(strcmp(buffer_in,"/quit")!=0); 
+
+    close_comm(connect_client_fd);
 }
