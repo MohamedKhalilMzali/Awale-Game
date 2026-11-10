@@ -1,4 +1,6 @@
 #define MAX_PLAYERS 100
+#define MAX_GAMES 50
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -8,14 +10,276 @@
 #include <signal.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #include "player.h"
 #include "cjson/cJSON.h"
 #include "network_server.h"
+#include "game.h"
 
 static Player player_c[MAX_PLAYERS];
 static int player_count=0;
 static pthread_mutex_t players_lock=PTHREAD_MUTEX_INITIALIZER; 
+static Game games[MAX_GAMES];
+
+static int create_game(int player1_socket, int player2_socket,
+                       const char *name1, const char *name2) {
+    for (int i = 0; i < MAX_GAMES; i++) {
+        if (!games[i].active) {
+            awale_init(&games[i].awale);
+
+            games[i].player1_socket = player1_socket;
+            games[i].player2_socket = player2_socket;
+            snprintf(games[i].name1, sizeof(games[i].name1), "%s", name1);
+            snprintf(games[i].name2, sizeof(games[i].name2), "%s", name2);
+            games[i].active = 1;
+
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
+/* Retrouve la partie active d'un joueur (et son côté : 0 ou 1) */
+static int find_game_by_socket(int client_socket, int *side)
+{
+    for (int i = 0; i < MAX_GAMES; i++) {
+        if (!games[i].active)
+            continue;
+        if (games[i].player1_socket == client_socket) {
+            if (side) *side = 0;
+            return i;
+        }
+        if (games[i].player2_socket == client_socket) {
+            if (side) *side = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void set_state_by_socket(int socket_fd, State state)
+{
+    for (int i = 0; i < player_count; i++) {
+        if (player_c[i].socket == socket_fd)
+            player_c[i].state = state;
+    }
+}
+
+/* Envoie le plateau aux deux joueurs */
+static void send_game_state(int game_id)
+{
+    Game *game = &games[game_id];
+    Awale *awale = &game->awale;
+
+    char message[1024];
+
+    int offset = snprintf(message, sizeof(message),
+                          "GAME_STATE %d %d %d",
+                          awale->current,
+                          awale->score[0],
+                          awale->score[1]);
+
+    for (int i = 0; i < NB_PITS && offset < (int)sizeof(message); i++) {
+        offset += snprintf(message + offset, sizeof(message) - offset,
+                           " %d", awale->pits[i]);
+    }
+
+    send_to_client(game->player1_socket, MSG_TEXT, message, sizeof(message));
+    send_to_client(game->player2_socket, MSG_TEXT, message, sizeof(message));
+}
+
+/* Annonce le début de la partie : qui est joueur 1 / joueur 2 */
+static void send_game_begin(int game_id)
+{
+    Game *game = &games[game_id];
+    char message[512];
+
+    snprintf(message, sizeof(message), "GAME_BEGIN 0 %s", game->name2);
+    send_to_client(game->player1_socket, MSG_TEXT, message, sizeof(message));
+
+    snprintf(message, sizeof(message), "GAME_BEGIN 1 %s", game->name1);
+    send_to_client(game->player2_socket, MSG_TEXT, message, sizeof(message));
+}
+
+/* Termine la partie : envoie GAME_OVER <score0> <score1> <vainqueur>
+ * vainqueur : 0 = joueur 1, 1 = joueur 2, 2 = égalité
+ * puis remet les deux joueurs en ONLINE_IDLE.
+ * reason : texte affiché aux joueurs (peut être NULL). */
+static void finish_game(int game_id, int winner, const char *reason)
+{
+    Game *game = &games[game_id];
+    char result[512];
+
+    snprintf(result, sizeof(result), "GAME_OVER %d %d %d %s",
+             game->awale.score[0], game->awale.score[1], winner,
+             reason != NULL ? reason : "");
+
+    send_to_client(game->player1_socket, MSG_TEXT, result, sizeof(result));
+    send_to_client(game->player2_socket, MSG_TEXT, result, sizeof(result));
+
+    set_state_by_socket(game->player1_socket, ONLINE_IDLE);
+    set_state_by_socket(game->player2_socket, ONLINE_IDLE);
+
+    game->active = 0;
+}
+
+/* Nom du fichier de sauvegarde d'une partie (caractères sûrs uniquement) */
+static void save_filename(const Game *game, char *out, size_t size)
+{
+    char a[64], b[64];
+    size_t n;
+
+    n = 0;
+    for (const char *p = game->name1; *p && n < sizeof(a) - 1; p++)
+        a[n++] = (isalnum((unsigned char)*p) || *p == '_' || *p == '-') ? *p : '_';
+    a[n] = '\0';
+
+    n = 0;
+    for (const char *p = game->name2; *p && n < sizeof(b) - 1; p++)
+        b[n++] = (isalnum((unsigned char)*p) || *p == '_' || *p == '-') ? *p : '_';
+    b[n] = '\0';
+
+    snprintf(out, size, "awale_save_%s_vs_%s.txt", a, b);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Commandes de jeu (équivalent du menu de part0/main.c)              */
+/* ------------------------------------------------------------------ */
+
+/* Coups 1 à 6 */
+static void handle_game_move(int client_socket, int pit_number)
+{
+    pthread_mutex_lock(&players_lock);
+
+    int player_side = -1;
+    int game_id = find_game_by_socket(client_socket, &player_side);
+
+    if (game_id == -1) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "NO_ACTIVE_GAME", sizeof("NO_ACTIVE_GAME"));
+        return;
+    }
+
+    Game *game = &games[game_id];
+
+    if (game->awale.current != player_side) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "NOT_YOUR_TURN",sizeof("NOT_YOUR_TURN"));
+        return;
+    }
+
+    if (!awale_play_move(&game->awale, pit_number)) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "INVALID_MOVE",sizeof("INVALID_MOVE"));
+        return;
+    }
+
+    if (awale_is_game_over(&game->awale)) {
+        awale_collect_remaining(&game->awale);
+        send_game_state(game_id);
+
+        int winner;
+        if (game->awale.score[0] > game->awale.score[1])      winner = 0;
+        else if (game->awale.score[1] > game->awale.score[0]) winner = 1;
+        else                                                  winner = 2;
+
+        finish_game(game_id, winner, "Fin de la partie");
+    }
+    else {
+        send_game_state(game_id);
+    }
+
+    pthread_mutex_unlock(&players_lock);
+}
+
+/* "s" : sauvegarder la partie en cours */
+static void handle_game_save(int client_socket)
+{
+    pthread_mutex_lock(&players_lock);
+
+    int game_id = find_game_by_socket(client_socket, NULL);
+    if (game_id == -1) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "NO_ACTIVE_GAME",sizeof("NO_ACTIVE_GAME"));
+        return;
+    }
+
+    char filename[512];
+    save_filename(&games[game_id], filename, sizeof(filename));
+
+    if (awale_save(&games[game_id].awale, filename)) {
+        send_to_client(games[game_id].player1_socket, MSG_TEXT, "SAVE_OK",sizeof("SAVE_OK"));
+        send_to_client(games[game_id].player2_socket, MSG_TEXT, "SAVE_OK",sizeof("SAVE_OK"));
+    }
+    else {
+        send_to_client(client_socket, MSG_TEXT, "SAVE_FAILED",sizeof("SAVE_FAILED"));
+    }
+
+    pthread_mutex_unlock(&players_lock);
+}
+
+/* "l" : recharger la dernière sauvegarde de cette partie */
+static void handle_game_load(int client_socket)
+{
+    pthread_mutex_lock(&players_lock);
+
+    int game_id = find_game_by_socket(client_socket, NULL);
+    if (game_id == -1) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "NO_ACTIVE_GAME",sizeof("NO_ACTIVE_GAME"));
+        return;
+    }
+
+    char filename[512];
+    save_filename(&games[game_id], filename, sizeof(filename));
+
+    if (awale_load(&games[game_id].awale, filename)) {
+        send_to_client(games[game_id].player1_socket, MSG_TEXT, "LOAD_OK",sizeof("LOAD_OK"));
+        send_to_client(games[game_id].player2_socket, MSG_TEXT, "LOAD_OK",sizeof("LOAD_OK"));
+        send_game_state(game_id);
+    }
+    else {
+        send_to_client(client_socket, MSG_TEXT, "LOAD_FAILED",sizeof("LOAD_FAILED"));
+    }
+
+    pthread_mutex_unlock(&players_lock);
+}
+
+/* "q" : abandonner la partie (l'adversaire gagne), retour au lobby.
+ * Appelée aussi quand un joueur se déconnecte en pleine partie.
+ * Doit être appelée avec players_lock déjà verrouillé. */
+static void leave_game_locked(int client_socket, const char *reason)
+{
+    int side = -1;
+    int game_id = find_game_by_socket(client_socket, &side);
+
+    if (game_id == -1)
+        return;
+
+    finish_game(game_id, 1 - side, reason);
+}
+
+static void handle_game_quit(int client_socket)
+{
+    pthread_mutex_lock(&players_lock);
+
+    if (find_game_by_socket(client_socket, NULL) == -1) {
+        pthread_mutex_unlock(&players_lock);
+        send_to_client(client_socket, MSG_TEXT, "NO_ACTIVE_GAME",sizeof("NO_ACTIVE_GAME"));
+        return;
+    }
+
+    leave_game_locked(client_socket, "Un joueur a abandonne la partie");
+
+    pthread_mutex_unlock(&players_lock);
+}
+
+
+/*------------------------------------------------------------------------------------------------------------*/
+
 
 cJSON* write_players_to_json(cJSON* players_json, cJSON* players_array, char *username){    
     cJSON *player=cJSON_CreateObject();
@@ -227,14 +491,31 @@ void send_invite(const char *sender_username, const char *receiver_username){
     
     char buffer_out[256];
     recv_from_client(receiver->socket,buffer_out);
-    if(strcmp(buffer_out,"REFUSED")==0){        
-        send_to_client(sender->socket,MSG_TEXT,&buffer_out,strlen(buffer_out));
+    if(strcmp(buffer_out,"REFUSED")==0){
+        invite.invite_state=REFUSED;        
+        send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
     }
     if(strcmp(buffer_out,"ACCEPTED")==0){
         //running play_game function which launches the game between both players
+        invite.invite_state=ACCEPTED;
+        send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
         printf("[+] Running the game ... \n");
+        
+        // Créer une nouvelle partie Awale
+        int game_id = create_game(sender->socket, receiver->socket,
+                                sender->username, receiver->username);                                
+
+        if (game_id == -1) {
+            return;
+        }
+
+        // Les deux joueurs passent en partie
+        sender->state = ONLINE_IN_GAME;
+        receiver->state = ONLINE_IN_GAME;
+
+        send_game_begin(game_id);
+        send_game_state(game_id);
     }
-    
 }
 
 void *handle_client(void *arg){   
@@ -330,8 +611,31 @@ void *handle_client(void *arg){
         else if(strcmp(command,"/quit")==0){
             char *username=search_player_by_socket(connect_socket_fd);                
             modify_user_state(username,OFFLINE);
+            leave_game_locked(connect_socket_fd,
+                      "The opponent session disconnected");
             close(connect_socket_fd);     
         }
+        
+        
+        // SAUVEGARDER / CHARGER / ABANDONNER (pendant une partie)
+        else if (strcmp(command, "s") == 0) {
+            handle_game_save(connect_socket_fd);
+        }
+        else if (strcmp(command, "l") == 0) {
+            handle_game_load(connect_socket_fd);
+        }
+        else if (strcmp(command, "q") == 0) {
+            handle_game_quit(connect_socket_fd);
+        }
+
+        // COUP AWALE
+        else if (strlen(command) == 1 &&
+                command[0] >= '1' && command[0] <= '6')
+        {
+            handle_game_move(connect_socket_fd, command[0] - '0');
+        }
+
+
         else{
             printf("[-] Invalid command from client: %s\n",buffer_out);
             char *response="INVALID_COMMAND";
