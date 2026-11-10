@@ -18,7 +18,9 @@ static pthread_mutex_t clients_lock=PTHREAD_MUTEX_INITIALIZER;
 static char prompt[256]="Awale (not registered)";
 static char buffer_in[1024];
 static Invite invite;
+static FriendRequest friendRequest;
 static int pending=0;
+static int FriendRequest_pending=0;
 
 // État de la partie côté client
 static volatile int in_game = 0;      // 1 si une partie est en cours
@@ -51,16 +53,19 @@ void display_menu(){
     printf("send-msg [username] [message] \n");
     printf("/list-online-users \n");
     printf("/list-current-games \n");
+    printf("/add-friend [username] \n");
     printf("/quit \n");
     printf("--------------------------------------------\n");
 }
 
 void display_game_menu(){
-    printf("\n========== MENU DE PARTIE ==========\n");
-    printf("1 a 6 : Choisir une case\n");
-    printf("s : Sauvegarder\n");
-    printf("l : Charger\n");
-    printf("q : Abandonner la partie\n");
+    printf("\n========== In-GAME MENU ==========\n");
+    printf("1-6 : Choose a position\n");
+    printf("s : Save the game\n");
+    printf("l : Load a game\n");
+    printf("/send-msg [username] [message]: To chat with your opponent \n");
+    printf("/help-menu \n");
+    printf("q : Quit the current game\n");
     printf("====================================\n");
 }
 
@@ -85,13 +90,18 @@ void display_players_from_json(cJSON *item){
 }
 
 void display_games_from_json(cJSON *item){
-    cJSON *games=cJSON_GetObjectItemCaseSensitive(item,"Players");
+    cJSON *games=cJSON_GetObjectItemCaseSensitive(item,"Games");
     if(cJSON_IsArray(games)){
         cJSON *game;
         printf("\n----------Ongoing Games------------\n");
         cJSON_ArrayForEach(game,games){
-            cJSON* game_ID=cJSON_GetObjectItemCaseSensitive(game,"ID");
-            printf("%d \n",game_ID->valueint);
+            cJSON* game_player1=cJSON_GetObjectItemCaseSensitive(game,"player 1");
+            cJSON* game_player2=cJSON_GetObjectItemCaseSensitive(game,"player 2");
+            
+            printf("\n---------------------------------------------------------------\n");
+            printf("Player 1: %s \n",game_player1->valuestring);
+            printf("Player 2:  %s \n",game_player2->valuestring);
+            printf("\n---------------------------------------------------------------\n");
         }
     }
 }
@@ -190,8 +200,8 @@ void *receive_msg(void *arg){
                         snprintf(opponent_name, sizeof(opponent_name), "%s", opp);
 
                         printf("\n*****************************************\n");
-                        printf("  LA PARTIE COMMENCE contre %s !\n", opponent_name);
-                        printf("  Vous etes le joueur %d (%s).\n",
+                        printf("  THE GAME WILL BEGIN AGAINST %s !\n", opponent_name);
+                        printf("  You are player %d (%s).\n",
                             side + 1, side == 0 ? "bas" : "haut");
                         printf("*****************************************\n");
                         display_game_menu();
@@ -355,7 +365,31 @@ void *receive_msg(void *arg){
                 printf("\n[+] NEW MESSAGE \n");
                 printf("%s: %s\n",chat_msg.sender_username,chat_msg.message);
             break;
-            }           
+            }
+            case MSG_FRIEND_REQUEST:{
+                pthread_mutex_lock(&clients_lock);      
+                
+                memcpy(&friendRequest,msg_content,sizeof(friendRequest));
+                friendRequest.sender_username[sizeof(friendRequest.sender_username)-1]='\0';
+                
+                printf("Sender: %s \n",friendRequest.sender_username);
+
+                if(friendRequest.req_state==REQUEST_PENDING){                                       
+                    FriendRequest_pending=1;
+                    printf("[REQUEST_NOTIFICATION] Friend request from %s : /accept-request, /refuse-request\n",friendRequest.sender_username);                              
+                }    
+                else if(friendRequest.req_state==REQUEST_ACCEPTED){
+                    printf("[REQUEST_NOTIFICATION] Player %s accepted your request \n",friendRequest.sender_username);                    
+                }
+                else if(friendRequest.req_state==REQUEST_REFUSED){
+                    printf("[REQUEST_NOTIFICATION] Player %s refused your request \n",friendRequest.sender_username);
+                }                
+
+                pthread_mutex_unlock(&clients_lock);                
+
+            break;
+            }
+            
         }
         free(msg_content);
         display_prompt();                                            
@@ -445,6 +479,30 @@ void main(int argc, char* argv[]){
             continue;               
         }
 
+        if(FriendRequest_pending==1){
+            char *response=NULL;
+            if(strcmp(buffer_in,"/accept-request")==0){
+                printf("REQUEST_ACCEPTED \n");
+                response="REQUEST_ACCEPTED";
+            }
+            else if(strcmp(buffer_in,"/refuse-request")==0){
+                printf("REQUEST_REFUSED \n");
+                response="REQUEST_REFUSED";
+            }            
+            
+            pthread_mutex_lock(&clients_lock);
+            FriendRequest_pending=0;
+            pthread_mutex_unlock(&clients_lock);
+
+            if(send(connect_client_fd,response,strlen(response),0)<=0){
+                printf("[-] Could not send data to the server \n");
+                exit(EXIT_FAILURE);                
+            }
+            printf("Sent answer to the server \n ");
+            continue;               
+        }
+
+
         else if(strcmp(buffer_in,"/help")==0){
             if(player.username[0]=='\0'){         
                 printf("--------------------------------------------\n");           
@@ -457,6 +515,12 @@ void main(int argc, char* argv[]){
             display_prompt();
             continue;
         }
+        else if(strcmp(buffer_in,"/help-menu")==0){
+            display_game_menu();
+            display_prompt();
+            continue;
+        }
+
         else{         
             if(send(connect_client_fd,&buffer_in,strlen(buffer_in),0)<=0){
                 printf("[-] Could not send data to the server \n");

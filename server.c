@@ -19,6 +19,7 @@
 
 static Player player_c[MAX_PLAYERS];
 static int player_count=0;
+static int game_count=0;
 static pthread_mutex_t players_lock=PTHREAD_MUTEX_INITIALIZER; 
 static Game games[MAX_GAMES];
 
@@ -33,6 +34,7 @@ static int create_game(int player1_socket, int player2_socket,
             snprintf(games[i].name1, sizeof(games[i].name1), "%s", name1);
             snprintf(games[i].name2, sizeof(games[i].name2), "%s", name2);
             games[i].active = 1;
+            game_count++;
 
             return i;
         }
@@ -290,6 +292,16 @@ cJSON* write_players_to_json(cJSON* players_json, cJSON* players_array, char *us
     return players_json;
 }
 
+cJSON* write_games_to_json(cJSON* games_json, cJSON* games_array, char *game_player1, char *game_player2){    
+    cJSON *game=cJSON_CreateObject();
+    cJSON_AddStringToObject(game,"player 1",game_player1);
+    cJSON_AddStringToObject(game,"player 2",game_player2);
+    cJSON_AddItemToArray(games_array,game);
+    printf("[JSON] Added the game to the array \n");
+    
+    return games_json;
+}
+
 int username_exists(const char *username)
 {
     int exists=0;
@@ -413,6 +425,29 @@ cJSON* display_online_players(){
     return players_json;
 }
 
+cJSON* display_online_games(){
+    cJSON *online_games=NULL;
+    cJSON *games_json=cJSON_CreateObject();
+    cJSON *games_array=cJSON_AddArrayToObject(games_json,"Games");
+    char *json=NULL;
+    
+    if(game_count>0){
+        printf("Games count: %d \n",game_count);
+        for(int i=0;i<game_count;i++){
+            if(games[i].active==1){
+                printf("Player 1: %s\n",games[i].name1);
+                printf("Player 2: %s \n",games[i].name2);                
+                online_games=write_games_to_json(games_json,games_array,games[i].name1,games[i].name2);                
+            }
+            else{
+                printf("[*] No active game \n");
+            }
+        }                        
+    }
+    return games_json;
+}
+
+
 int modify_user_state(const char *username,State state){
     int player_index=search_player_index(username);
     if(player_index!=-1){
@@ -517,6 +552,48 @@ void send_invite(const char *sender_username, const char *receiver_username){
         send_game_state(game_id);
     }
 }
+void add_friend(const char* request_sender, const char* request_receiver){
+    Player* sender=search_player(request_sender);
+    Player* receiver=search_player(request_receiver);
+
+    if(sender==NULL){
+        printf("[-] User %s does not exist \n",sender->username);
+        return;
+    }
+    if(receiver==NULL){
+         printf("[-] User %s does not exist \n",receiver->username);
+        return;
+    }
+
+    printf("Sender [%s] socket %d\n",sender->username,sender->socket);
+    printf("Receiver [%s] socket %d\n",receiver->username,receiver->socket);
+
+    FriendRequest friend_req;
+    memcpy(&friend_req.sender_username,sender->username,sizeof(friend_req.sender_username));
+    friend_req.req_state=REQUEST_PENDING;
+
+    send_to_client(receiver->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+    printf("[+] Sending a friend request from %s to %s on socket %d \n",sender->username,receiver->username,receiver->socket);
+    
+    char buffer_out[256];
+    recv_from_client(receiver->socket,buffer_out);
+    
+    if(strcmp(buffer_out,"REQUEST_REFUSED")==0){
+        friend_req.req_state=REQUEST_REFUSED;        
+        send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+    }
+    if(strcmp(buffer_out,"REQUEST_ACCEPTED")==0){
+        strncpy(sender->friends[sender->nb_friends],receiver->username,sizeof(receiver->username));
+        strncpy(receiver->friends[receiver->nb_friends],sender->username,sizeof(sender->username));
+        sender->nb_friends++;
+        receiver->nb_friends++;
+        friend_req.req_state=REQUEST_ACCEPTED;
+        send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+
+
+    }
+}
+
 
 void *handle_client(void *arg){   
     char *save_ptr=NULL;
@@ -574,6 +651,15 @@ void *handle_client(void *arg){
             send_to_client(connect_socket_fd,MSG_JSON,online_p,strlen(online_p));                        
         }
 
+         else if(strcmp(command,"/list-online-games")==0){
+            pthread_mutex_lock(&players_lock);
+            cJSON* onlineGames_json=display_online_games();         
+            pthread_mutex_unlock(&players_lock);                         
+            char* online_g=cJSON_PrintUnformatted(onlineGames_json);                                
+            send_to_client(connect_socket_fd,MSG_JSON,online_g,strlen(online_g));                        
+        }
+
+
         else if(strcmp(command,"/add-bio")==0){
             char *username=search_player_by_socket(connect_socket_fd);                
             char *bio=strtok_r(NULL, "\r\n",&save_ptr);
@@ -595,6 +681,15 @@ void *handle_client(void *arg){
             char *receiver_username=strtok_r(NULL, " ",&save_ptr);
                       
             send_invite(sender_username,receiver_username);
+            pthread_mutex_unlock(&players_lock); 
+        }
+
+        else if(strcmp(command,"/add-friend")==0){
+            pthread_mutex_lock(&players_lock);
+            char *sender_username=search_player_by_socket(connect_socket_fd);
+            char *receiver_username=strtok_r(NULL, " ",&save_ptr);
+                      
+            add_friend(sender_username,receiver_username);
             pthread_mutex_unlock(&players_lock); 
         }
 
