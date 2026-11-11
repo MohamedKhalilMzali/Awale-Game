@@ -301,6 +301,19 @@ cJSON* write_games_to_json(cJSON* games_json, cJSON* games_array, char *game_pla
     
     return games_json;
 }
+cJSON* write_friends_to_json(cJSON* friends_json, Player* player){     
+    cJSON *friends_arr=cJSON_AddArrayToObject(friends_json,"Friends");
+    for(int i=0;i<player->nb_friends;i++){        
+        cJSON_AddItemToArray(friends_arr,cJSON_CreateString(player->friends[i]));
+    }    
+    return friends_json;
+}
+
+cJSON* write_bio_to_json(cJSON* bio_json, const char *bio){     
+    cJSON_AddStringToObject(bio_json,"Bio",bio);      
+    return bio_json;
+}
+
 
 int username_exists(const char *username)
 {
@@ -594,6 +607,35 @@ void add_friend(const char* request_sender, const char* request_receiver){
     }
 }
 
+cJSON* display_friends(const char* username){
+    cJSON *friends_json=cJSON_CreateObject();
+    cJSON *friends=NULL;
+
+    Player *player=search_player(username);
+    if(player==NULL){
+        printf("Player %s does not exist \n");
+        return NULL;
+    }
+    
+    for(int i=0;i<player->nb_friends;i++){    
+        friends=write_friends_to_json(friends_json,player);
+    }
+    return friends_json;
+}
+
+cJSON* display_bio(const char *username){
+    Player *p=search_player(username);    
+    cJSON* bio_json=cJSON_CreateObject();
+    cJSON* bio_p=NULL; 
+
+    if(p==NULL){
+        printf("User %s does not exist \n");
+        return NULL;
+    }
+    bio_p=write_bio_to_json(bio_json,p->bio);
+    return bio_json; 
+}
+
 
 void *handle_client(void *arg){   
     char *save_ptr=NULL;
@@ -674,6 +716,17 @@ void *handle_client(void *arg){
             char *response="BIO_ADDED";
             send_to_client(connect_socket_fd,MSG_TEXT,response,strlen(response));
         }
+        else if(strcmp(command,"/list-bio")==0){
+            char *username=strtok_r(NULL," ",&save_ptr);  
+
+            pthread_mutex_lock(&players_lock);
+            cJSON *bioJson=display_bio(username);
+            pthread_mutex_unlock(&players_lock);
+            
+            char *bio_p=cJSON_PrintUnformatted(bioJson);
+
+            send_to_client(connect_socket_fd,MSG_JSON,bio_p,strlen(bio_p));
+        }
 
         else if(strcmp(command,"/invite")==0){
             pthread_mutex_lock(&players_lock);
@@ -691,6 +744,18 @@ void *handle_client(void *arg){
                       
             add_friend(sender_username,receiver_username);
             pthread_mutex_unlock(&players_lock); 
+        }
+
+        else if(strcmp(command,"/list-friends")==0){
+            pthread_mutex_lock(&players_lock);
+            char *sender_username=search_player_by_socket(connect_socket_fd);
+
+            cJSON* friends_json=display_friends(sender_username);
+            pthread_mutex_unlock(&players_lock);
+            
+            char *friends_p=cJSON_PrintUnformatted(friends_json);
+            send_to_client(connect_socket_fd,MSG_JSON,friends_p,strlen(friends_p));                                  
+             
         }
 
         else if(strcmp(command,"/send-msg")==0){

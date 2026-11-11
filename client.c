@@ -50,10 +50,11 @@ void display_menu(){
     printf("/add-bio [bio] \n");
     printf("/list-bio [username] \n");
     printf("/invite [username] \n");
-    printf("send-msg [username] [message] \n");
+    printf("/send-msg [username] [message] \n");
     printf("/list-online-users \n");
     printf("/list-current-games \n");
     printf("/add-friend [username] \n");
+    printf("/list-friends \n");
     printf("/quit \n");
     printf("--------------------------------------------\n");
 }
@@ -103,6 +104,25 @@ void display_games_from_json(cJSON *item){
             printf("Player 2:  %s \n",game_player2->valuestring);
             printf("\n---------------------------------------------------------------\n");
         }
+    }
+}
+
+void display_friends_from_json(cJSON *item){
+    cJSON *friends=cJSON_GetObjectItemCaseSensitive(item,"Friends");
+    if(cJSON_IsArray(friends)){
+        cJSON *friend;
+        printf("\n----------Friends------------\n");
+        cJSON_ArrayForEach(friend,friends){
+            if(cJSON_IsString(friend)){
+                printf("%s \n", friend->valuestring);
+            }            
+        }
+    }
+}
+void display_bio_from_json(cJSON *item){
+    cJSON *bio=cJSON_GetObjectItemCaseSensitive(item,"Bio");
+    if(cJSON_IsString(bio)){
+        printf("[Bio]: %s\n", bio->valuestring);
     }
 }
 
@@ -327,9 +347,15 @@ void *receive_msg(void *arg){
                     cJSON_Print(json);
                     display_players_from_json(json);
                 }
-                if(strcmp(item->string,"Games")==0){                    
+                else if(strcmp(item->string,"Games")==0){                    
                     display_games_from_json(json);
+                }
+                else if(strcmp(item->string,"Friends")==0){
+                    display_friends_from_json(json);
                 }    
+                else if(strcmp(item->string,"Bio")==0){
+                    display_bio_from_json(json);
+                }
             
             break;    
             }
