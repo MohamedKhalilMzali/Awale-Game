@@ -155,6 +155,8 @@ static void send_game_state(int game_id)
 
     send_to_client(game->player1_socket, MSG_TEXT, message, sizeof(message));
     send_to_client(game->player2_socket, MSG_TEXT, message, sizeof(message));
+
+    send_observe_state(game_id, -1);   /* observateurs */
 }
 
 /* Annonce le début de la partie : qui est joueur 1 / joueur 2 */
