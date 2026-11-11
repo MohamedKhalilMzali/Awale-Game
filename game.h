@@ -24,16 +24,13 @@ typedef struct {
 } Game;
 
 
-/* Initialisation et affichage */
 void awale_init(Awale *g);
 void awale_print(const Awale *g);
 
-/* Gestion des coups */
 int awale_play_move(Awale *g, int pit_number);
 int awale_has_legal_move(const Awale *g);
 int awale_is_game_over(const Awale *g);
 void awale_collect_remaining(Awale *g);
 
-/* Sauvegarde et chargement */
 int awale_save(const Awale *g, const char *filename);
 int awale_load(Awale *g, const char *filename);

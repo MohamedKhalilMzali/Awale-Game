@@ -22,18 +22,16 @@ static FriendRequest friendRequest;
 static int pending=0;
 static int FriendRequest_pending=0;
 
-// État de la partie côté client
-static volatile int in_game = 0;      // 1 si une partie est en cours
-static volatile int my_side = -1;     // 0 = joueur 1 (bas), 1 = joueur 2 (haut)
+
+static volatile int in_game = 0;      
+static volatile int my_side = -1;     
 static char opponent_name[256] = "";
 
-// Synchronisation entre le thread principal et le thread de réception
 static pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t registration_cond = PTHREAD_COND_INITIALIZER;
+static char* receiver_username;
 
-
-// Mode observateur
-static volatile int observing = -1;   // id de la partie observée, -1 sinon
+static volatile int observing = -1;  
 static char obs_name1[256] = "";
 static char obs_name2[256] = "";
 
@@ -58,7 +56,7 @@ void display_menu(){
     printf("/invite [username] \n");
     printf("/send-msg [username] [message] \n");
     printf("/list-online-users \n");
-    printf("/list-current-games \n");
+    printf("/list-online-games \n");
     printf("/add-friend [username] \n");
     printf("/list-friends \n");
     printf("/observer-mode [username]\n");
@@ -107,10 +105,14 @@ void display_games_from_json(cJSON *item){
         cJSON_ArrayForEach(game,games){
             cJSON* game_player1=cJSON_GetObjectItemCaseSensitive(game,"player 1");
             cJSON* game_player2=cJSON_GetObjectItemCaseSensitive(game,"player 2");
+            cJSON* score_player_1=cJSON_GetObjectItemCaseSensitive(game,"score player 1");
+            cJSON* score_player_2=cJSON_GetObjectItemCaseSensitive(game,"score player 2");
             
             printf("\n---------------------------------------------------------------\n");
             printf("Player 1: %s \n",game_player1->valuestring);
             printf("Player 2:  %s \n",game_player2->valuestring);
+            printf("score player 1:  %d \n",score_player_1->valueint);
+            printf("score player 2:  %d \n",score_player_2->valueint);
             printf("\n---------------------------------------------------------------\n");
         }
     }
@@ -177,13 +179,13 @@ void *receive_msg(void *arg){
             break;
         }
         msg_type=ntohl(msg_type);
-        printf("MSG_TYPE: %d \n",msg_type);
+        
                         
         if(recv(connect_client_fd,&msg_length,sizeof(msg_length),0)<=0){
             break;
         }        
         msg_length=ntohl(msg_length);
-        printf("MSG_LENGTH: %d \n",msg_length);
+        
 
         msg_content=malloc(msg_length+1);
         if(recv(connect_client_fd,msg_content,msg_length,0)<=0){
@@ -195,14 +197,11 @@ void *receive_msg(void *arg){
         switch(msg_type){
             case MSG_TEXT:{
 
-                printf("Received response: %s \n",msg_content);
-
                 if(strcmp(msg_content,"USERNAME_AVAILABLE")==0){
                     pthread_mutex_lock(&clients_lock);
                     printf("Buffer_in in the thread: %s \n",buffer_in);
                     char *command=strtok(buffer_in," ");
-                    char *username=strtok(NULL, " ");
-                    printf("Username in the thread: %s \n",username);                    
+                    char *username=strtok(NULL, " ");                   
                     if(username!=NULL){
                         snprintf(player.username,sizeof(player.username),"%s",username);                                       
                         snprintf(prompt,sizeof(prompt),"%s",player.username);
@@ -229,8 +228,7 @@ void *receive_msg(void *arg){
                     printf("[-] No friends yet \n");
                 }
                 
-                /*------------------------------------------------------------------------- */
-                            // Début d'une partie : "GAME_BEGIN <mon côté> <adversaire>"
+              
                 else if (strncmp(msg_content, "GAME_BEGIN ", 11) == 0) {
 
                     int side = 0;
@@ -250,7 +248,6 @@ void *receive_msg(void *arg){
                     }
                 }
 
-                // Plateau : "GAME_STATE <courant> <score0> <score1> <12 cases>"
                 else if (strncmp(msg_content, "GAME_STATE ", 11) == 0) {
 
                     int current, score0, score1;
@@ -294,7 +291,6 @@ void *receive_msg(void *arg){
                     }
                 }
 
-                // Fin de partie : "GAME_OVER <score0> <score1> <vainqueur> <raison>"
                 else if (strncmp(msg_content, "GAME_OVER ", 10) == 0) {
 
                     int score0 = 0, score1 = 0, winner = 2, offset = 0;
@@ -328,7 +324,6 @@ void *receive_msg(void *arg){
                     my_side = -1;
                 }
 
-                // Réponses aux commandes de jeu
                 else if (strcmp(msg_content, "INVALID_MOVE") == 0) {
                     printf("\nCoup invalide ! Reessayez.\n");
                 }
@@ -355,7 +350,6 @@ void *receive_msg(void *arg){
                 }
                 
                 
-                // Mode observateur : "OBSERVE_OK <id> <joueur1> <joueur2>"
                 else if (strncmp(msg_content, "OBSERVE_OK ", 11) == 0) {
                     int id = -1;
                     char n1[256] = "", n2[256] = "";
@@ -368,7 +362,6 @@ void *receive_msg(void *arg){
                     }
                 }
 
-                // Plateau observé : "OBSERVE_STATE <id> <courant> <score0> <score1> <12 cases>"
                 else if (strncmp(msg_content, "OBSERVE_STATE ", 14) == 0) {
                     int id, current, score0, score1, pits[NB_PITS];
                     int offset = 0, valid = 1;
@@ -390,7 +383,6 @@ void *receive_msg(void *arg){
                     }
                 }
 
-                // Fin de la partie observée : "OBSERVE_END <id> <score0> <score1> <vainqueur> <raison>"
                 else if (strncmp(msg_content, "OBSERVE_END ", 12) == 0) {
                     int id = 0, score0 = 0, score1 = 0, winner = 2, offset = 0;
                     const char *reason = "";
@@ -433,7 +425,6 @@ void *receive_msg(void *arg){
                 }
 
 
-                /*--------------------------------------------------------------------------*/
             break;
             }
             case MSG_JSON:{
@@ -506,10 +497,10 @@ void *receive_msg(void *arg){
                     printf("[REQUEST_NOTIFICATION] Friend request from %s : /accept-request, /refuse-request\n",friendRequest.sender_username);                              
                 }    
                 else if(friendRequest.req_state==REQUEST_ACCEPTED){
-                    printf("[REQUEST_NOTIFICATION] Player %s accepted your request \n",friendRequest.sender_username);                    
+                    printf("[REQUEST_NOTIFICATION] Player %s accepted your request \n",friendRequest.receiver_username);                    
                 }
                 else if(friendRequest.req_state==REQUEST_REFUSED){
-                    printf("[REQUEST_NOTIFICATION] Player %s refused your request \n",friendRequest.sender_username);
+                    printf("[REQUEST_NOTIFICATION] Player %s refused your request \n",friendRequest.receiver_username);
                 }                
 
                 pthread_mutex_unlock(&clients_lock);                
@@ -583,8 +574,6 @@ void main(int argc, char* argv[]){
             continue;
         }
 
-        printf("Pending value: %d\n",pending);
-
         if(pending==1){
             char *response=NULL;
             if(strcmp(buffer_in,"/accept")==0){
@@ -630,7 +619,6 @@ void main(int argc, char* argv[]){
             printf("Sent answer to the server \n ");
             continue;               
         }
-
 
         else if(strcmp(buffer_in,"/help")==0){
             if(player.username[0]=='\0'){         

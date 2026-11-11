@@ -29,7 +29,9 @@ Following the registration step, the player has access to the following features
 * /list-online-users, to list the users that are in the state.ONLINE_IDLE, and therefore connected to the server, but not in game. 
 * /list-current-games, to list the ongoing games between two players. 
 * /quit, to disconnect from the server.
-/help, to display the above commands again.
+* /observer-mode [USERNAME], to allow the user to observer ongoing games.
+* /stop-observe, to stop observing.
+* /help, to display the above commands again.
 
 Once inside a game, a player can run the following commands:
 * 1-6, selecting a position between 1 and 6 in the game board.

@@ -6,7 +6,7 @@
 static int count_seeds(const Awale *g, int player)
 {
     int total = 0; 
-    int start = player * PITS_PER_PLAYER; /*pour det la première case de chaque joueur (J1 prem case est 1 par contre la 1e case du J2 eest 6)*/
+    int start = player * PITS_PER_PLAYER; 
 
     for (int i = start; i < start + PITS_PER_PLAYER; i++)
         total += g->pits[i];
@@ -25,7 +25,6 @@ void awale_init(Awale *g)
     g->current = 0;
 }
 
-/* Afficher le plateau */
 void awale_print(const Awale *g)
 {
     printf("\n========================================\n");
@@ -56,7 +55,6 @@ void awale_print(const Awale *g)
     printf("========================================\n");
 }
 
-/*pour vérifier si les coups sont légals ou paq on retourne le vide si ils ne sont pas légales*/
 static int apply_move(Awale *g, int pit_number)
 {
     int player = g->current;
@@ -72,18 +70,15 @@ static int apply_move(Awale *g, int pit_number)
 
     int opponent_seeds_before = count_seeds(g, opponent);
 
-    /* Retirer les graines de la case choisie */
     int seeds = g->pits[start];
     g->pits[start] = 0;
 
     int position = start;
 
-    /* Distribuer les graines */
     while (seeds > 0)
     {
         position = (position + 1) % NB_PITS;
 
-        /* Ne pas redéposer dans la case de départ */
         if (position == start)
             continue;
 
@@ -91,14 +86,12 @@ static int apply_move(Awale *g, int pit_number)
         seeds--;
     }
 
-    /* Vérifier que l'adversaire est nourri */
     if (opponent_seeds_before == 0 &&
         count_seeds(g, opponent) == 0)
     {
         return 0;
     }
 
-    /* Capturer les graines */
     int opponent_start = opponent * PITS_PER_PLAYER;
     int opponent_end = opponent_start + PITS_PER_PLAYER - 1;
 
@@ -107,7 +100,6 @@ static int apply_move(Awale *g, int pit_number)
         int capture_position = position;
         int captured = 0;
 
-        /* Vérifier les cases à capturer */
         while (capture_position >= opponent_start &&
                capture_position <= opponent_end &&
                (g->pits[capture_position] == 2 ||
@@ -117,10 +109,6 @@ static int apply_move(Awale *g, int pit_number)
             capture_position--;
         }
 
-        /*
-         * Ne pas capturer toutes les graines
-         * de l'adversaire.
-         */
         if (captured < count_seeds(g, opponent))
         {
             capture_position = position;
@@ -137,13 +125,11 @@ static int apply_move(Awale *g, int pit_number)
         }
     }
 
-    /* Passer au joueur suivant */
     g->current = opponent;
 
     return 1;
 }
 
-/* Jouer un coup */
 int awale_play_move(Awale *g, int pit_number)
 {
     Awale temp = *g;
@@ -156,7 +142,6 @@ int awale_play_move(Awale *g, int pit_number)
     return 1;
 }
 
-/* Vérifier si un joueur possède un coup légal */
 int awale_has_legal_move(const Awale *g)
 {
     Awale temp;
@@ -172,7 +157,6 @@ int awale_has_legal_move(const Awale *g)
     return 0;
 }
 
-/*vérifier si la partie est terminée*/
 int awale_is_game_over(const Awale *g)
 {
     if (g->score[0] >= 25 || g->score[1] >= 25)
@@ -184,7 +168,6 @@ int awale_is_game_over(const Awale *g)
     return 0;
 }
 
-/*distribution des graines restantes à leurs propriétaires*/
 void awale_collect_remaining(Awale *g)
 {
     for (int i = 0; i < PITS_PER_PLAYER; i++)
@@ -197,7 +180,6 @@ void awale_collect_remaining(Awale *g)
     }
 }
 
-/* Sauvegarder la partie */
 int awale_save(const Awale *g, const char *filename)
 {
     FILE *file = fopen(filename, "w");
@@ -218,7 +200,6 @@ int awale_save(const Awale *g, const char *filename)
     return 1;
 }
 
-/* Charger une partie */
 int awale_load(Awale *g, const char *filename)
 {
     FILE *file = fopen(filename, "r");
@@ -260,7 +241,6 @@ int awale_load(Awale *g, const char *filename)
 
     fclose(file);
 
-    /* Vérifier que les 48 graines sont présentes */
     if (total != NB_PITS * INITIAL_SEEDS)
         return 0;
 

@@ -36,6 +36,7 @@ typedef struct Invite{
 
 typedef struct FriendRequest{
     char sender_username[256];
+    char receiver_username[256];
     FriendRequest_state req_state;
 }FriendRequest;
 

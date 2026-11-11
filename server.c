@@ -53,7 +53,6 @@ static void stop_observing(int socket_fd)
                 observers[g][k] = 0;
 }
 
-/* Ajoute un observateur à une partie. 1 = ok, 0 = échec */
 static int start_observing(int socket_fd, int game_id)
 {
     if (game_id < 0 || game_id >= MAX_GAMES || !games[game_id].active)
@@ -108,7 +107,6 @@ static int create_game(int player1_socket, int player2_socket,
 }
 
 
-/* Retrouve la partie active d'un joueur (et son côté : 0 ou 1) */
 static int find_game_by_socket(int client_socket, int *side)
 {
     for (int i = 0; i < MAX_GAMES; i++) {
@@ -134,7 +132,6 @@ static void set_state_by_socket(int socket_fd, State state)
     }
 }
 
-/* Envoie le plateau aux deux joueurs */
 static void send_game_state(int game_id)
 {
     Game *game = &games[game_id];
@@ -159,7 +156,6 @@ static void send_game_state(int game_id)
     send_observe_state(game_id, -1);   /* observateurs */
 }
 
-/* Annonce le début de la partie : qui est joueur 1 / joueur 2 */
 static void send_game_begin(int game_id)
 {
     Game *game = &games[game_id];
@@ -172,10 +168,7 @@ static void send_game_begin(int game_id)
     send_to_client(game->player2_socket, MSG_TEXT, message, sizeof(message));
 }
 
-/* Termine la partie : envoie GAME_OVER <score0> <score1> <vainqueur>
- * vainqueur : 0 = joueur 1, 1 = joueur 2, 2 = égalité
- * puis remet les deux joueurs en ONLINE_IDLE.
- * reason : texte affiché aux joueurs (peut être NULL). */
+
 static void finish_game(int game_id, int winner, const char *reason)
 {
     Game *game = &games[game_id];
@@ -194,7 +187,6 @@ static void finish_game(int game_id, int winner, const char *reason)
     game->active = 0;
 }
 
-/* Nom du fichier de sauvegarde d'une partie (caractères sûrs uniquement) */
 static void save_filename(const Game *game, char *out, size_t size)
 {
     char a[64], b[64];
@@ -213,11 +205,6 @@ static void save_filename(const Game *game, char *out, size_t size)
     snprintf(out, size, "awale_save_%s_vs_%s.txt", a, b);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Commandes de jeu (équivalent du menu de part0/main.c)              */
-/* ------------------------------------------------------------------ */
-
-/* Coups 1 à 6 */
 static void handle_game_move(int client_socket, int pit_number)
 {
     pthread_mutex_lock(&players_lock);
@@ -263,7 +250,6 @@ static void handle_game_move(int client_socket, int pit_number)
     pthread_mutex_unlock(&players_lock);
 }
 
-/* "s" : sauvegarder la partie en cours */
 static void handle_game_save(int client_socket)
 {
     pthread_mutex_lock(&players_lock);
@@ -289,7 +275,6 @@ static void handle_game_save(int client_socket)
     pthread_mutex_unlock(&players_lock);
 }
 
-/* "l" : recharger la dernière sauvegarde de cette partie */
 static void handle_game_load(int client_socket)
 {
     pthread_mutex_lock(&players_lock);
@@ -316,9 +301,7 @@ static void handle_game_load(int client_socket)
     pthread_mutex_unlock(&players_lock);
 }
 
-/* "q" : abandonner la partie (l'adversaire gagne), retour au lobby.
- * Appelée aussi quand un joueur se déconnecte en pleine partie.
- * Doit être appelée avec players_lock déjà verrouillé. */
+
 static void leave_game_locked(int client_socket, const char *reason)
 {
     int side = -1;
@@ -345,9 +328,6 @@ static void handle_game_quit(int client_socket)
     pthread_mutex_unlock(&players_lock);
 }
 
-/*------------------------------------------------------------------------------------------------------------*/
-
-
 cJSON* write_players_to_json(cJSON* players_json, cJSON* players_array, char *username){    
     cJSON *player=cJSON_CreateObject();
     cJSON_AddStringToObject(player,"username",username);
@@ -357,10 +337,12 @@ cJSON* write_players_to_json(cJSON* players_json, cJSON* players_array, char *us
     return players_json;
 }
 
-cJSON* write_games_to_json(cJSON* games_json, cJSON* games_array, char *game_player1, char *game_player2){    
+cJSON* write_games_to_json(cJSON* games_json, cJSON* games_array, char *game_player1, char *game_player2, int score_player_1, int score_player_2){    
     cJSON *game=cJSON_CreateObject();
     cJSON_AddStringToObject(game,"player 1",game_player1);
     cJSON_AddStringToObject(game,"player 2",game_player2);
+    cJSON_AddNumberToObject(game,"score player 1",score_player_1);
+    cJSON_AddNumberToObject(game,"score player 2",score_player_2);
     cJSON_AddItemToArray(games_array,game);
     printf("[JSON] Added the game to the array \n");
     
@@ -494,7 +476,7 @@ cJSON* display_online_players(){
     if(player_count>0){
         printf("Player count: %d \n",player_count);
         for(int i=0;i<player_count;i++){
-            if(player_c[i].state==ONLINE_IDLE){
+            if(player_c[i].state==ONLINE_IDLE || player_c[i].state==ONLINE_IN_GAME){
                 printf("Username: %s\n",player_c[i].username);                
                 online_users=write_players_to_json(players_json,players_array,player_c[i].username);                
             }
@@ -515,7 +497,7 @@ cJSON* display_online_games(){
             if(games[i].active==1){
                 printf("Player 1: %s\n",games[i].name1);
                 printf("Player 2: %s \n",games[i].name2);                
-                online_games=write_games_to_json(games_json,games_array,games[i].name1,games[i].name2);                
+                online_games=write_games_to_json(games_json,games_array,games[i].name1,games[i].name2, games[i].awale.score[0], games[i].awale.score[1]);                
             }
             else{
                 printf("[*] No active game \n");
@@ -619,12 +601,11 @@ void send_invite(const char *sender_username, const char *receiver_username){
         send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
     }
     if(strcmp(buffer_out,"ACCEPTED")==0){
-        //running play_game function which launches the game between both players
+
         invite.invite_state=ACCEPTED;
         send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
         printf("[+] Running the game ... \n");
         
-        // Créer une nouvelle partie Awale
         int game_id = create_game(sender->socket, receiver->socket,
                                 sender->username, receiver->username);                                
 
@@ -632,7 +613,6 @@ void send_invite(const char *sender_username, const char *receiver_username){
             return;
         }
 
-        // Les deux joueurs passent en partie
         sender->state = ONLINE_IN_GAME;
         receiver->state = ONLINE_IN_GAME;
 
@@ -658,6 +638,7 @@ void add_friend(const char* request_sender, const char* request_receiver){
 
     FriendRequest friend_req;
     memcpy(&friend_req.sender_username,sender->username,sizeof(friend_req.sender_username));
+    memcpy(&friend_req.receiver_username,receiver->username,sizeof(friend_req.receiver_username));
     friend_req.req_state=REQUEST_PENDING;
 
     send_to_client(receiver->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
@@ -904,8 +885,6 @@ void *handle_client(void *arg){
             close(connect_socket_fd);     
         }
 
-        // OBSERVER MODE : /observer-mode [username]
-        // -> observer la partie que ce joueur est en train de jouer
         else if (strcmp(command, "/observer-mode") == 0) {
 
             char *target_name = strtok_r(NULL, " \r\n", &save_ptr);
@@ -913,6 +892,8 @@ void *handle_client(void *arg){
             if (target_name == NULL) {
                 send_to_client(connect_socket_fd, MSG_TEXT,
                                "Usage: /observer-mode [username]", sizeof("Usage: /observer-mode [username]"));
+
+                continue;
             }
 
             char message[600];
@@ -963,14 +944,14 @@ void *handle_client(void *arg){
                 if (idx == -1)
                 error = "OBSERVE_FAILED";
                 else if (player_c[idx].state != ONLINE_IDLE)
-                    error = "OBSERVE_FAILED_BUSY";          /* on joue deja */
+                    error = "OBSERVE_FAILED_BUSY";       
                 else if (target == NULL)
-                    error = "OBSERVE_FAILED_UNKNOWN";       /* joueur inexistant */
+                    error = "OBSERVE_FAILED_UNKNOWN";       
                 else if (target == &player_c[idx])
                     error = "OBSERVE_FAILED_SELF";
                 else if (target->state != ONLINE_IN_GAME ||
                             (game_id = find_game_by_socket(target->socket, NULL)) == -1)
-                    error = "OBSERVE_FAILED_NO_GAME";       /* pas en partie */
+                    error = "OBSERVE_FAILED_NO_GAME";      
                 else if (!start_observing(connect_socket_fd, game_id))
                     error = "OBSERVE_FAILED";
 
@@ -988,7 +969,6 @@ void *handle_client(void *arg){
         }
             
 
-        // STOP OBSERVE
         else if (strcmp(command, "/stop-observe") == 0) {
             pthread_mutex_lock(&players_lock);
             stop_observing(connect_socket_fd);
@@ -997,7 +977,6 @@ void *handle_client(void *arg){
         }
 
         
-        // SAUVEGARDER / CHARGER / ABANDONNER (pendant une partie)
         else if (strcmp(command, "s") == 0) {
             handle_game_save(connect_socket_fd);
         }
@@ -1008,7 +987,6 @@ void *handle_client(void *arg){
             handle_game_quit(connect_socket_fd);
         }
 
-        // COUP AWALE
         else if (strlen(command) == 1 &&
                 command[0] >= '1' && command[0] <= '6')
         {
