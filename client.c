@@ -32,6 +32,12 @@ static pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t registration_cond = PTHREAD_COND_INITIALIZER;
 
 
+// Mode observateur
+static volatile int observing = -1;   // id de la partie observée, -1 sinon
+static char obs_name1[256] = "";
+static char obs_name2[256] = "";
+
+
 void display_banner(){
     printf("\n------------------------------------------------\n");
     printf("\n-----------------AWALE GAME---------------------\n");
@@ -55,6 +61,8 @@ void display_menu(){
     printf("/list-current-games \n");
     printf("/add-friend [username] \n");
     printf("/list-friends \n");
+    printf("/observer-mode [username]\n");
+    printf("/stop-observe\n");
     printf("/quit \n");
     printf("--------------------------------------------\n");
 }
@@ -64,7 +72,7 @@ void display_game_menu(){
     printf("1-6 : Choose a position\n");
     printf("s : Save the game\n");
     printf("l : Load a game\n");
-    printf("/send-msg [username] [message]: To chat with your opponent \n");
+    printf("/send-msg [username] [message]\n");
     printf("/private-mode \n");
     printf("/help-menu \n");
     printf("q : Quit the current game\n");
@@ -214,6 +222,12 @@ void *receive_msg(void *arg){
                 else if(strcmp(msg_content,"INVALID_COMMAND")==0){
                     printf("[-] Server returned: invalid command \n");
                 }
+                else if(strcmp(msg_content,"PRIVATE_MODE_REFUSE")==0){
+                    printf("[-] GAME IN PRIVATE MODE. The game is restricted to the player's friends only \n");
+                }
+                else if(strcmp(msg_content,"NO_FRIENDS")==0){
+                    printf("[-] No friends yet \n");
+                }
                 
                 /*------------------------------------------------------------------------- */
                             // Début d'une partie : "GAME_BEGIN <mon côté> <adversaire>"
@@ -340,6 +354,85 @@ void *receive_msg(void *arg){
                     printf("\nErreur de chargement (aucune sauvegarde valide).\n");
                 }
                 
+                
+                // Mode observateur : "OBSERVE_OK <id> <joueur1> <joueur2>"
+                else if (strncmp(msg_content, "OBSERVE_OK ", 11) == 0) {
+                    int id = -1;
+                    char n1[256] = "", n2[256] = "";
+                    if (sscanf(msg_content + 11, "%d %255s %255s", &id, n1, n2) == 3) {
+                        observing = id;
+                        snprintf(obs_name1, sizeof(obs_name1), "%s", n1);
+                        snprintf(obs_name2, sizeof(obs_name2), "%s", n2);
+                        printf("\n[+] Vous observez la partie %d : %s vs %s (/stop-observe pour arreter)\n",
+                            id, n1, n2);
+                    }
+                }
+
+                // Plateau observé : "OBSERVE_STATE <id> <courant> <score0> <score1> <12 cases>"
+                else if (strncmp(msg_content, "OBSERVE_STATE ", 14) == 0) {
+                    int id, current, score0, score1, pits[NB_PITS];
+                    int offset = 0, valid = 1;
+                    char *data = msg_content + 14;
+
+                    if (sscanf(data, "%d %d %d %d%n", &id, &current, &score0, &score1, &offset) == 4) {
+                        data += offset;
+                        for (int i = 0; i < NB_PITS; i++) {
+                            int consumed = 0;
+                            if (sscanf(data, "%d%n", &pits[i], &consumed) != 1) { valid = 0; break; }
+                            data += consumed;
+                        }
+                        if (valid) {
+                            printf("\n[OBSERVATION partie %d] Joueur 1 = %s, Joueur 2 = %s\n",
+                                id, obs_name1, obs_name2);
+                            display_awale_board(pits, score0, score1, current);
+                            printf("... Au tour de %s ...\n", current == 0 ? obs_name1 : obs_name2);
+                        }
+                    }
+                }
+
+                // Fin de la partie observée : "OBSERVE_END <id> <score0> <score1> <vainqueur> <raison>"
+                else if (strncmp(msg_content, "OBSERVE_END ", 12) == 0) {
+                    int id = 0, score0 = 0, score1 = 0, winner = 2, offset = 0;
+                    const char *reason = "";
+                    if (sscanf(msg_content + 12, "%d %d %d %d%n",
+                            &id, &score0, &score1, &winner, &offset) == 4) {
+                        reason = msg_content + 12 + offset;
+                        while (*reason == ' ') reason++;
+                    }
+                    printf("\n=========================================\n");
+                    printf("  PARTIE OBSERVEE %d TERMINEE\n", id);
+                    if (*reason != '\0')
+                        printf("  (%s)\n", reason);
+                    printf("  %s : %d points\n", obs_name1, score0);
+                    printf("  %s : %d points\n", obs_name2, score1);
+                    if (winner == 2)
+                        printf("  Egalite !\n");
+                    else
+                        printf("  Vainqueur : %s\n", winner == 0 ? obs_name1 : obs_name2);
+                    printf("=========================================\n");
+                    observing = -1;
+                }
+                else if (strcmp(msg_content, "OBSERVE_FAILED_UNKNOWN") == 0) {
+                    printf("\n[-] Ce joueur n'existe pas.\n");
+                }
+                else if (strcmp(msg_content, "OBSERVE_FAILED_NO_GAME") == 0) {
+                    printf("\n[-] Ce joueur n'est pas en train de jouer une partie.\n");
+                }
+                else if (strcmp(msg_content, "OBSERVE_FAILED_SELF") == 0) {
+                    printf("\n[-] Vous ne pouvez pas vous observer vous-meme.\n");
+                }
+                else if (strcmp(msg_content, "OBSERVE_FAILED_BUSY") == 0) {
+                    printf("\n[-] Impossible d'observer pendant que vous jouez une partie.\n");
+                }
+                else if (strcmp(msg_content, "OBSERVE_FAILED") == 0) {
+                    printf("\n[-] Impossible d'observer cette partie.\n");
+                }
+                else if (strcmp(msg_content, "OBSERVE_STOPPED") == 0) {
+                    observing = -1;
+                    printf("\n[+] Vous n'observez plus aucune partie.\n");
+                }
+
+
                 /*--------------------------------------------------------------------------*/
             break;
             }

@@ -1,5 +1,6 @@
 #define MAX_PLAYERS 100
 #define MAX_GAMES 50
+#define MAX_OBSERVERS 10
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,68 @@ static int player_count=0;
 static int game_count=0;
 static pthread_mutex_t players_lock=PTHREAD_MUTEX_INITIALIZER; 
 static Game games[MAX_GAMES];
+static int observers[MAX_GAMES][MAX_OBSERVERS];
+
+
+static void send_observe_state(int game_id, int target)
+{
+    Awale *awale = &games[game_id].awale;
+    char message[1024];
+
+    int offset = snprintf(message, sizeof(message), "OBSERVE_STATE %d %d %d %d",
+                          game_id, awale->current, awale->score[0], awale->score[1]);
+    for (int i = 0; i < NB_PITS && offset < (int)sizeof(message); i++)
+        offset += snprintf(message + offset, sizeof(message) - offset, " %d", awale->pits[i]);
+
+    if (target != -1) {
+        send_to_client(target, MSG_TEXT, message,sizeof(message));
+        return;
+    }
+    for (int k = 0; k < MAX_OBSERVERS; k++)
+        if (observers[game_id][k] > 0)
+            send_to_client(observers[game_id][k], MSG_TEXT, message,sizeof(message));
+}
+
+static void stop_observing(int socket_fd)
+{
+    for (int g = 0; g < MAX_GAMES; g++)
+        for (int k = 0; k < MAX_OBSERVERS; k++)
+            if (observers[g][k] == socket_fd)
+                observers[g][k] = 0;
+}
+
+/* Ajoute un observateur à une partie. 1 = ok, 0 = échec */
+static int start_observing(int socket_fd, int game_id)
+{
+    if (game_id < 0 || game_id >= MAX_GAMES || !games[game_id].active)
+        return 0;
+
+        if (games[game_id].player1_socket == socket_fd ||
+        games[game_id].player2_socket == socket_fd)
+        return 0;
+
+    stop_observing(socket_fd);   
+    for (int k = 0; k < MAX_OBSERVERS; k++) {
+        if (observers[game_id][k] == 0) {
+            observers[game_id][k] = socket_fd;
+            return 1;
+        }
+    }
+    return 0;                 
+}
+
+static void end_observation(int game_id, int winner, const char *reason)
+{
+    char message[512];
+    snprintf(message, sizeof(message), "OBSERVE_END %d %d %d %d %s",
+             game_id, games[game_id].awale.score[0], games[game_id].awale.score[1],
+             winner, reason != NULL ? reason : "");
+    for (int k = 0; k < MAX_OBSERVERS; k++) {
+        if (observers[game_id][k] > 0)
+            send_to_client(observers[game_id][k], MSG_TEXT, message,sizeof(message));
+        observers[game_id][k] = 0;
+    }
+}
 
 static int create_game(int player1_socket, int player2_socket,
                        const char *name1, const char *name2) {
@@ -478,6 +541,16 @@ void add_player_bio(const char *username, const char *bio){
     }
 }
 
+static int registered_index_by_socket(int socket_fd)
+{
+    for (int i = 0; i < player_count; i++) {
+        if (player_c[i].socket == socket_fd && player_c[i].state != OFFLINE)
+            return i;
+    }
+    return -1;
+}
+
+
 void send_message_chat(const char *sender_username, const char *receiver_username, const char* msg){
     Player* sender=search_player(sender_username);
     Player* receiver=search_player(receiver_username);
@@ -649,6 +722,28 @@ void restrict_game_to_friends(const char* username){
         }
     }
 }
+int observer_in_friends(Player *target, Player *observer){
+    if(target==NULL){
+        printf("Player %s does not exist \n",target->username);
+        return -1;
+    }
+    if(observer==NULL){
+        printf("Player %s does not exist \n",observer->username);
+        return -1;
+    }
+    
+    if(target->nb_friends==0){
+        return -1;
+    }
+
+    for(int i=0;i<target->nb_friends;i++){
+        if(strcmp(target->friends[i],observer->username)==0){
+            printf("[+] Observer in the list of friends of the target player \n");
+            return 1;
+        }
+    }
+return -1;
+}
 
 
 void *handle_client(void *arg){   
@@ -765,6 +860,14 @@ void *handle_client(void *arg){
         else if(strcmp(command,"/list-friends")==0){
             pthread_mutex_lock(&players_lock);
             char *sender_username=search_player_by_socket(connect_socket_fd);
+            
+            Player *player=search_player(sender_username);
+            if(player->nb_friends==0){
+                pthread_mutex_unlock(&players_lock);
+                char *response="NO_FRIENDS";
+                send_to_client(connect_socket_fd,MSG_TEXT,response,strlen(response));  
+                continue;
+            }
 
             cJSON* friends_json=display_friends(sender_username);
             pthread_mutex_unlock(&players_lock);
@@ -798,7 +901,99 @@ void *handle_client(void *arg){
                       "The opponent session disconnected");
             close(connect_socket_fd);     
         }
-        
+
+        // OBSERVER MODE : /observer-mode [username]
+        // -> observer la partie que ce joueur est en train de jouer
+        else if (strcmp(command, "/observer-mode") == 0) {
+
+            char *target_name = strtok_r(NULL, " \r\n", &save_ptr);
+            
+            if (target_name == NULL) {
+                send_to_client(connect_socket_fd, MSG_TEXT,
+                               "Usage: /observer-mode [username]", sizeof("Usage: /observer-mode [username]"));
+            }
+
+            char message[600];
+            const char *error = NULL;
+            int game_id = -1;
+            int game_index = -1;
+
+            pthread_mutex_lock(&players_lock);
+            int idx = registered_index_by_socket(connect_socket_fd);
+            Player *target = search_player(target_name);
+            
+            char *observer_username=search_player_by_socket(connect_socket_fd);
+            Player *observer=search_player(observer_username);
+
+            printf("Found the observer username from the observer object: %s \n",observer->username);
+
+            for(int i=0;i<game_count;i++){
+                if(games[i].player1_socket==target->socket || games[i].player2_socket==target->socket){
+                    game_index=i;
+                    printf("Found the game of that target player: %d \n",game_index);
+                    break;
+                }
+            }
+            
+            int allowed=1;
+
+            if(games[game_index].state==PRIVATE_MODE){
+
+                printf("Game in PRIVATE MODE \n");
+
+                if(observer_in_friends(target,observer)==-1){
+                    char *response="PRIVATE_MODE_REFUSE";
+                    send_to_client(connect_socket_fd,MSG_TEXT,response,strlen(response));
+                    allowed=0;
+                }
+                else if(observer_in_friends(target,observer)==1){
+                    printf("[+] Observer in the target player's group of friends \n");
+                    allowed=1;
+                }
+            }
+            printf("Allowed: %d \n",allowed);
+
+            if(allowed==0){
+                pthread_mutex_unlock(&players_lock);
+                continue;
+            }           
+            if(allowed==1){
+                if (idx == -1)
+                error = "OBSERVE_FAILED";
+                else if (player_c[idx].state != ONLINE_IDLE)
+                    error = "OBSERVE_FAILED_BUSY";          /* on joue deja */
+                else if (target == NULL)
+                    error = "OBSERVE_FAILED_UNKNOWN";       /* joueur inexistant */
+                else if (target == &player_c[idx])
+                    error = "OBSERVE_FAILED_SELF";
+                else if (target->state != ONLINE_IN_GAME ||
+                            (game_id = find_game_by_socket(target->socket, NULL)) == -1)
+                    error = "OBSERVE_FAILED_NO_GAME";       /* pas en partie */
+                else if (!start_observing(connect_socket_fd, game_id))
+                    error = "OBSERVE_FAILED";
+
+                if (error == NULL) {
+                    snprintf(message, sizeof(message), "OBSERVE_OK %d %s %s",
+                                game_id, games[game_id].name1, games[game_id].name2);
+                    send_to_client(connect_socket_fd, MSG_TEXT, message, sizeof(message));
+                    send_observe_state(game_id, connect_socket_fd);
+                }
+                pthread_mutex_unlock(&players_lock);
+
+                if (error != NULL)
+                    send_to_client(connect_socket_fd, MSG_TEXT, error, strlen(error));
+            }
+        }
+            
+
+        // STOP OBSERVE
+        else if (strcmp(command, "/stop-observe") == 0) {
+            pthread_mutex_lock(&players_lock);
+            stop_observing(connect_socket_fd);
+            pthread_mutex_unlock(&players_lock);
+            send_to_client(connect_socket_fd, MSG_TEXT, "OBSERVE_STOPPED", sizeof("OBSERVE_STOPPED"));
+        }
+
         
         // SAUVEGARDER / CHARGER / ABANDONNER (pendant une partie)
         else if (strcmp(command, "s") == 0) {
@@ -824,7 +1019,19 @@ void *handle_client(void *arg){
             char *response="INVALID_COMMAND";
             send_to_client(connect_socket_fd,MSG_TEXT,"INVALID_COMMAND",sizeof("INVALID_COMMAND"));
         }                                                    
-    }                
+    }
+    
+    pthread_mutex_lock(&players_lock);
+
+    leave_game_locked(connect_socket_fd,"Opponent disconnected");
+    stop_observing(connect_socket_fd);
+
+    pthread_mutex_unlock(&players_lock);
+
+    
+    printf("[*] Closing communication with client.\n");
+    close(connect_socket_fd);
+
 }
 
 void main(int argc, char* argv[]){
