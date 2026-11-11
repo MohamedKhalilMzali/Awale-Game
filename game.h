@@ -8,6 +8,11 @@ typedef struct {
     int current;
 } Awale;
 
+typedef enum GameState{
+    PRIVATE_MODE=0,
+    PUBLIC_MODE=1
+}GameState;
+
 typedef struct {
     Awale awale;
     int player1_socket;
@@ -15,6 +20,7 @@ typedef struct {
     char name1[256];
     char name2[256];
     int active;
+    GameState state;
 } Game;
 
 

@@ -65,6 +65,7 @@ void display_game_menu(){
     printf("s : Save the game\n");
     printf("l : Load a game\n");
     printf("/send-msg [username] [message]: To chat with your opponent \n");
+    printf("/private-mode \n");
     printf("/help-menu \n");
     printf("q : Quit the current game\n");
     printf("====================================\n");
@@ -164,17 +165,24 @@ void *receive_msg(void *arg){
     uint32_t msg_type,msg_length;
 
     while(1){
-        recv(connect_client_fd,&msg_type,sizeof(msg_type),0);
+        if(recv(connect_client_fd,&msg_type,sizeof(msg_type),0)<=0){
+            break;
+        }
         msg_type=ntohl(msg_type);
         printf("MSG_TYPE: %d \n",msg_type);
                         
-        recv(connect_client_fd,&msg_length,sizeof(msg_length),0);        
+        if(recv(connect_client_fd,&msg_length,sizeof(msg_length),0)<=0){
+            break;
+        }        
         msg_length=ntohl(msg_length);
         printf("MSG_LENGTH: %d \n",msg_length);
 
         msg_content=malloc(msg_length+1);
-        recv(connect_client_fd,msg_content,msg_length,0);
-        msg_content[msg_length]='\0';                        
+        if(recv(connect_client_fd,msg_content,msg_length,0)<=0){
+            free(msg_content);
+            break;            
+        }
+        msg_content[msg_length]='\0';                                
 
         switch(msg_type){
             case MSG_TEXT:{
@@ -420,6 +428,8 @@ void *receive_msg(void *arg){
         free(msg_content);
         display_prompt();                                            
     }
+    close_comm(connect_client_fd);
+    printf("[*] Server closed the communication \n");
 }
 
 void main(int argc, char* argv[]){

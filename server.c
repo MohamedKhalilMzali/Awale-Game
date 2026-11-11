@@ -34,6 +34,7 @@ static int create_game(int player1_socket, int player2_socket,
             snprintf(games[i].name1, sizeof(games[i].name1), "%s", name1);
             snprintf(games[i].name2, sizeof(games[i].name2), "%s", name2);
             games[i].active = 1;
+            games[i].state=PUBLIC_MODE;
             game_count++;
 
             return i;
@@ -278,7 +279,6 @@ static void handle_game_quit(int client_socket)
 
     pthread_mutex_unlock(&players_lock);
 }
-
 
 /*------------------------------------------------------------------------------------------------------------*/
 
@@ -636,6 +636,20 @@ cJSON* display_bio(const char *username){
     return bio_json; 
 }
 
+void restrict_game_to_friends(const char* username){
+    Player *p=search_player(username);
+    if(p==NULL){
+        printf("Player %s does not exist \n");
+        return;
+    }
+    for(int i=0;i<game_count;i++){
+        if(games[i].player1_socket==p->socket || games[i].player2_socket==p->socket){
+            games[i].state=PRIVATE_MODE;
+            printf("[+] Changed the game state to private \n");
+        }
+    }
+}
+
 
 void *handle_client(void *arg){   
     char *save_ptr=NULL;
@@ -692,6 +706,8 @@ void *handle_client(void *arg){
             char* online_p=cJSON_PrintUnformatted(onlinePlayers_json);                                
             send_to_client(connect_socket_fd,MSG_JSON,online_p,strlen(online_p));                        
         }
+
+
 
          else if(strcmp(command,"/list-online-games")==0){
             pthread_mutex_lock(&players_lock);
@@ -766,6 +782,13 @@ void *handle_client(void *arg){
             pthread_mutex_lock(&players_lock);
             send_message_chat(sender_username,receiver_username,msg);     
             pthread_mutex_unlock(&players_lock);           
+        }
+
+        else if(strcmp(command,"/private-mode")==0){
+            pthread_mutex_lock(&players_lock);
+            char *sender_username=search_player_by_socket(connect_socket_fd);
+            restrict_game_to_friends(sender_username);
+            pthread_mutex_unlock(&players_lock);
         }
 
         else if(strcmp(command,"/quit")==0){
