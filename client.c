@@ -227,6 +227,42 @@ void *receive_msg(void *arg){
                 else if(strcmp(msg_content,"NO_FRIENDS")==0){
                     printf("[-] No friends yet \n");
                 }
+                else if(strcmp(msg_content,"PLAYER_IN_GAME")==0){
+                    printf("[-] Impossible : le joueur est deja en partie. \n");
+                }
+                else if(strcmp(msg_content,"YOU_ARE_IN_GAME")==0){
+                    printf("[-] Impossible : vous etes deja en partie. \n");
+                }
+                else if(strcmp(msg_content,"PLAYER_NOT_FOUND")==0){
+                    printf("[-] Ce joueur n'existe pas. \n");
+                }
+                else if(strcmp(msg_content,"PLAYER_OFFLINE")==0){
+                    printf("[-] Ce joueur n'est pas connecte. \n");
+                }
+                else if(strcmp(msg_content,"PLAYER_BUSY")==0){
+                    printf("[-] Ce joueur a deja une demande en attente, reessayez plus tard. \n");
+                }
+                else if(strcmp(msg_content,"CANNOT_TARGET_SELF")==0){
+                    printf("[-] Vous ne pouvez pas vous choisir vous-meme. \n");
+                }
+                else if(strcmp(msg_content,"INVITE_SENT")==0){
+                    printf("[+] Invitation envoyee. Vous pouvez continuer en attendant la reponse. \n");
+                }
+                else if(strcmp(msg_content,"INVITE_CANCELLED")==0){
+                    printf("[-] L'invitation n'est plus valable (le joueur est deja en partie ou deconnecte). \n");
+                }
+                else if(strcmp(msg_content,"NO_INVITE")==0){
+                    printf("[-] Vous n'avez aucune invitation en attente. \n");
+                }
+                else if(strcmp(msg_content,"FRIEND_REQUEST_SENT")==0){
+                    printf("[+] Demande d'ami envoyee. Vous pouvez continuer en attendant la reponse. \n");
+                }
+                else if(strcmp(msg_content,"ALREADY_FRIENDS")==0){
+                    printf("[-] Ce joueur est deja votre ami. \n");
+                }
+                else if(strcmp(msg_content,"NO_FRIEND_REQUEST")==0){
+                    printf("[-] Vous n'avez aucune demande d'ami en attente. \n");
+                }
                 
               
                 else if (strncmp(msg_content, "GAME_BEGIN ", 11) == 0) {
@@ -585,16 +621,18 @@ void main(int argc, char* argv[]){
                 response="REFUSED";
             }            
             
-            pthread_mutex_lock(&clients_lock);
-            pending=0;
-            pthread_mutex_unlock(&clients_lock);
+            if(response!=NULL){
+                pthread_mutex_lock(&clients_lock);
+                pending=0;
+                pthread_mutex_unlock(&clients_lock);
 
-            if(send(connect_client_fd,response,strlen(response),0)<=0){
-                printf("[-] Could not send data to the server \n");
-                exit(EXIT_FAILURE);                
+                if(send(connect_client_fd,response,strlen(response),0)<=0){
+                    printf("[-] Could not send data to the server \n");
+                    exit(EXIT_FAILURE);                
+                }
+                printf("Sent answer to the server \n ");
+                continue;
             }
-            printf("Sent answer to the server \n ");
-            continue;               
         }
 
         if(FriendRequest_pending==1){
@@ -608,19 +646,21 @@ void main(int argc, char* argv[]){
                 response="REQUEST_REFUSED";
             }            
             
-            pthread_mutex_lock(&clients_lock);
-            FriendRequest_pending=0;
-            pthread_mutex_unlock(&clients_lock);
+            if(response!=NULL){
+                pthread_mutex_lock(&clients_lock);
+                FriendRequest_pending=0;
+                pthread_mutex_unlock(&clients_lock);
 
-            if(send(connect_client_fd,response,strlen(response),0)<=0){
-                printf("[-] Could not send data to the server \n");
-                exit(EXIT_FAILURE);                
+                if(send(connect_client_fd,response,strlen(response),0)<=0){
+                    printf("[-] Could not send data to the server \n");
+                    exit(EXIT_FAILURE);                
+                }
+                printf("Sent answer to the server \n ");
+                continue;
             }
-            printf("Sent answer to the server \n ");
-            continue;               
         }
 
-        else if(strcmp(buffer_in,"/help")==0){
+        if(strcmp(buffer_in,"/help")==0){
             if(player.username[0]=='\0'){         
                 printf("--------------------------------------------\n");           
                 printf("/register [username] \n");

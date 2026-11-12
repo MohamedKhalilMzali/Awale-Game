@@ -25,6 +25,9 @@ static pthread_mutex_t players_lock=PTHREAD_MUTEX_INITIALIZER;
 static Game games[MAX_GAMES];
 static int observers[MAX_GAMES][MAX_OBSERVERS];
 
+static char invite_from[MAX_PLAYERS][256];
+static char friend_request_from[MAX_PLAYERS][256];
+
 
 static void send_observe_state(int game_id, int target)
 {
@@ -568,99 +571,190 @@ void send_message_chat(const char *sender_username, const char *receiver_usernam
     printf("[+] Sending message %s from %s to %s on socket %d \n",chat_msg.message,chat_msg.sender_username,receiver->username,receiver->socket);
 }
 
-void send_invite(const char *sender_username, const char *receiver_username){
+void send_invite(int sender_socket, const char *receiver_username){
+    char *sender_username=search_player_by_socket(sender_socket);
     Player* sender=search_player(sender_username);
     Player* receiver=search_player(receiver_username);
 
     if(sender==NULL){
-        printf("[-] User %s does not exist \n",sender->username);
+        printf("[-] The sender is not registered \n");
         return;
     }
     if(receiver==NULL){
-         printf("[-] User %s does not exist \n",receiver->username);
+        printf("[-] User %s does not exist \n",receiver_username);
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_NOT_FOUND",strlen("PLAYER_NOT_FOUND"));
+        return;
+    }
+    if(receiver==sender){
+        send_to_client(sender_socket,MSG_TEXT,"CANNOT_TARGET_SELF",strlen("CANNOT_TARGET_SELF"));
+        return;
+    }
+    if(sender->state==ONLINE_IN_GAME){
+        send_to_client(sender_socket,MSG_TEXT,"YOU_ARE_IN_GAME",strlen("YOU_ARE_IN_GAME"));
+        return;
+    }
+    if(receiver->state==ONLINE_IN_GAME){
+        printf("[-] %s is already in a game \n",receiver->username);
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_IN_GAME",strlen("PLAYER_IN_GAME"));
+        return;
+    }
+    if(receiver->state==OFFLINE){
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_OFFLINE",strlen("PLAYER_OFFLINE"));
         return;
     }
 
-    printf("Sender [%s] socket %d\n",sender->username,sender->socket);
-    printf("Receiver [%s] socket %d\n",receiver->username,receiver->socket);
+    int r = receiver - player_c;
+    if(invite_from[r][0]!='\0'){
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_BUSY",strlen("PLAYER_BUSY"));
+        return;
+    }
+
+    snprintf(invite_from[r],sizeof(invite_from[r]),"%s",sender->username);
 
     Invite invite;
-    memcpy(&invite.sender_username,sender->username,sizeof(invite.sender_username));
+    memset(&invite,0,sizeof(invite));
+    snprintf(invite.sender_username,sizeof(invite.sender_username),"%s",sender->username);
     invite.invite_state=PENDING;
 
-    if (fcntl(receiver->socket, F_GETFD) == -1) {
-        perror("Receiver socket is invalid");
-    }
     send_to_client(receiver->socket,MSG_INVITE,&invite,sizeof(invite));
+    send_to_client(sender_socket,MSG_TEXT,"INVITE_SENT",strlen("INVITE_SENT"));
     printf("[+] Sending invite from %s to %s on socket %d \n",sender->username,receiver->username,receiver->socket);
-    
-    char buffer_out[256];
-    recv_from_client(receiver->socket,buffer_out);
-    if(strcmp(buffer_out,"REFUSED")==0){
-        invite.invite_state=REFUSED;        
-        send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
-    }
-    if(strcmp(buffer_out,"ACCEPTED")==0){
-
-        invite.invite_state=ACCEPTED;
-        send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
-        printf("[+] Running the game ... \n");
-        
-        int game_id = create_game(sender->socket, receiver->socket,
-                                sender->username, receiver->username);                                
-
-        if (game_id == -1) {
-            return;
-        }
-
-        sender->state = ONLINE_IN_GAME;
-        receiver->state = ONLINE_IN_GAME;
-
-        send_game_begin(game_id);
-        send_game_state(game_id);
-    }
 }
-void add_friend(const char* request_sender, const char* request_receiver){
+
+void answer_invite(int receiver_socket, int accepted){
+    char *receiver_username=search_player_by_socket(receiver_socket);
+    Player* receiver=search_player(receiver_username);
+    if(receiver==NULL){
+        return;
+    }
+
+    int r = receiver - player_c;
+    if(invite_from[r][0]=='\0'){
+        send_to_client(receiver_socket,MSG_TEXT,"NO_INVITE",strlen("NO_INVITE"));
+        return;
+    }
+
+    Player* sender=search_player(invite_from[r]);
+    invite_from[r][0]='\0';
+
+    if(sender==NULL || sender->state!=ONLINE_IDLE || receiver->state!=ONLINE_IDLE){
+        send_to_client(receiver_socket,MSG_TEXT,"INVITE_CANCELLED",strlen("INVITE_CANCELLED"));
+        return;
+    }
+
+    Invite invite;
+    memset(&invite,0,sizeof(invite));
+    snprintf(invite.sender_username,sizeof(invite.sender_username),"%s",receiver->username);
+
+    if(!accepted){
+        invite.invite_state=REFUSED;
+        send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
+        return;
+    }
+
+    invite.invite_state=ACCEPTED;
+    send_to_client(sender->socket,MSG_INVITE,&invite,sizeof(invite));
+    printf("[+] Running the game ... \n");
+
+    int game_id = create_game(sender->socket, receiver->socket,
+                              sender->username, receiver->username);
+    if (game_id == -1) {
+        return;
+    }
+
+    sender->state = ONLINE_IN_GAME;
+    receiver->state = ONLINE_IN_GAME;
+
+    send_game_begin(game_id);
+    send_game_state(game_id);
+}
+
+void add_friend(int sender_socket, const char* request_receiver){
+    char *request_sender=search_player_by_socket(sender_socket);
     Player* sender=search_player(request_sender);
     Player* receiver=search_player(request_receiver);
 
     if(sender==NULL){
-        printf("[-] User %s does not exist \n",sender->username);
+        printf("[-] The sender is not registered \n");
         return;
     }
     if(receiver==NULL){
-         printf("[-] User %s does not exist \n",receiver->username);
+        printf("[-] User %s does not exist \n",request_receiver);
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_NOT_FOUND",strlen("PLAYER_NOT_FOUND"));
+        return;
+    }
+    if(receiver==sender){
+        send_to_client(sender_socket,MSG_TEXT,"CANNOT_TARGET_SELF",strlen("CANNOT_TARGET_SELF"));
+        return;
+    }
+    for(int i=0;i<sender->nb_friends;i++){
+        if(strcmp(sender->friends[i],receiver->username)==0){
+            send_to_client(sender_socket,MSG_TEXT,"ALREADY_FRIENDS",strlen("ALREADY_FRIENDS"));
+            return;
+        }
+    }
+    if(receiver->state==OFFLINE){
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_OFFLINE",strlen("PLAYER_OFFLINE"));
         return;
     }
 
-    printf("Sender [%s] socket %d\n",sender->username,sender->socket);
-    printf("Receiver [%s] socket %d\n",receiver->username,receiver->socket);
+    int r = receiver - player_c;
+    if(friend_request_from[r][0]!='\0'){
+        send_to_client(sender_socket,MSG_TEXT,"PLAYER_BUSY",strlen("PLAYER_BUSY"));
+        return;
+    }
+
+    snprintf(friend_request_from[r],sizeof(friend_request_from[r]),"%s",sender->username);
 
     FriendRequest friend_req;
-    memcpy(&friend_req.sender_username,sender->username,sizeof(friend_req.sender_username));
-    memcpy(&friend_req.receiver_username,receiver->username,sizeof(friend_req.receiver_username));
+    memset(&friend_req,0,sizeof(friend_req));
+    snprintf(friend_req.sender_username,sizeof(friend_req.sender_username),"%s",sender->username);
+    snprintf(friend_req.receiver_username,sizeof(friend_req.receiver_username),"%s",receiver->username);
     friend_req.req_state=REQUEST_PENDING;
 
     send_to_client(receiver->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+    send_to_client(sender_socket,MSG_TEXT,"FRIEND_REQUEST_SENT",strlen("FRIEND_REQUEST_SENT"));
     printf("[+] Sending a friend request from %s to %s on socket %d \n",sender->username,receiver->username,receiver->socket);
-    
-    char buffer_out[256];
-    recv_from_client(receiver->socket,buffer_out);
-    
-    if(strcmp(buffer_out,"REQUEST_REFUSED")==0){
-        friend_req.req_state=REQUEST_REFUSED;        
-        send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+}
+
+void answer_friend_request(int receiver_socket, int accepted){
+    char *receiver_username=search_player_by_socket(receiver_socket);
+    Player* receiver=search_player(receiver_username);
+    if(receiver==NULL){
+        return;
     }
-    if(strcmp(buffer_out,"REQUEST_ACCEPTED")==0){
-        strncpy(sender->friends[sender->nb_friends],receiver->username,sizeof(receiver->username));
-        strncpy(receiver->friends[receiver->nb_friends],sender->username,sizeof(sender->username));
+
+    int r = receiver - player_c;
+    if(friend_request_from[r][0]=='\0'){
+        send_to_client(receiver_socket,MSG_TEXT,"NO_FRIEND_REQUEST",strlen("NO_FRIEND_REQUEST"));
+        return;
+    }
+
+    Player* sender=search_player(friend_request_from[r]);
+    friend_request_from[r][0]='\0';
+    if(sender==NULL){
+        return;
+    }
+
+    FriendRequest friend_req;
+    memset(&friend_req,0,sizeof(friend_req));
+    snprintf(friend_req.sender_username,sizeof(friend_req.sender_username),"%s",sender->username);
+    snprintf(friend_req.receiver_username,sizeof(friend_req.receiver_username),"%s",receiver->username);
+
+    if(!accepted){
+        friend_req.req_state=REQUEST_REFUSED;
+        send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
+        return;
+    }
+
+    if(sender->nb_friends<MAX_FRIENDS && receiver->nb_friends<MAX_FRIENDS){
+        snprintf(sender->friends[sender->nb_friends],sizeof(sender->friends[0]),"%s",receiver->username);
+        snprintf(receiver->friends[receiver->nb_friends],sizeof(receiver->friends[0]),"%s",sender->username);
         sender->nb_friends++;
         receiver->nb_friends++;
-        friend_req.req_state=REQUEST_ACCEPTED;
-        send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
-
-
     }
+    friend_req.req_state=REQUEST_ACCEPTED;
+    send_to_client(sender->socket,MSG_FRIEND_REQUEST,&friend_req,sizeof(friend_req));
 }
 
 cJSON* display_friends(const char* username){
@@ -669,7 +763,7 @@ cJSON* display_friends(const char* username){
 
     Player *player=search_player(username);
     if(player==NULL){
-        printf("Player %s does not exist \n");
+        printf("Player %s does not exist \n", username);
         return NULL;
     }
     
@@ -685,7 +779,7 @@ cJSON* display_bio(const char *username){
     cJSON* bio_p=NULL; 
 
     if(p==NULL){
-        printf("User %s does not exist \n");
+        printf("User %s does not exist \n", username);
         return NULL;
     }
     bio_p=write_bio_to_json(bio_json,p->bio);
@@ -695,7 +789,7 @@ cJSON* display_bio(const char *username){
 void restrict_game_to_friends(const char* username){
     Player *p=search_player(username);
     if(p==NULL){
-        printf("Player %s does not exist \n");
+        printf("Player %s does not exist \n", username);
         return;
     }
     for(int i=0;i<game_count;i++){
@@ -823,21 +917,31 @@ void *handle_client(void *arg){
         }
 
         else if(strcmp(command,"/invite")==0){
-            pthread_mutex_lock(&players_lock);
-            char *sender_username=search_player_by_socket(connect_socket_fd);
             char *receiver_username=strtok_r(NULL, " ",&save_ptr);
-                      
-            send_invite(sender_username,receiver_username);
+
+            pthread_mutex_lock(&players_lock);
+            send_invite(connect_socket_fd,receiver_username);
             pthread_mutex_unlock(&players_lock); 
         }
 
-        else if(strcmp(command,"/add-friend")==0){
+        else if(strcmp(command,"ACCEPTED")==0 || strcmp(command,"REFUSED")==0){
             pthread_mutex_lock(&players_lock);
-            char *sender_username=search_player_by_socket(connect_socket_fd);
+            answer_invite(connect_socket_fd, strcmp(command,"ACCEPTED")==0);
+            pthread_mutex_unlock(&players_lock);
+        }
+
+        else if(strcmp(command,"/add-friend")==0){
             char *receiver_username=strtok_r(NULL, " ",&save_ptr);
-                      
-            add_friend(sender_username,receiver_username);
+
+            pthread_mutex_lock(&players_lock);
+            add_friend(connect_socket_fd,receiver_username);
             pthread_mutex_unlock(&players_lock); 
+        }
+
+        else if(strcmp(command,"REQUEST_ACCEPTED")==0 || strcmp(command,"REQUEST_REFUSED")==0){
+            pthread_mutex_lock(&players_lock);
+            answer_friend_request(connect_socket_fd, strcmp(command,"REQUEST_ACCEPTED")==0);
+            pthread_mutex_unlock(&players_lock);
         }
 
         else if(strcmp(command,"/list-friends")==0){
